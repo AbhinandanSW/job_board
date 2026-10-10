@@ -1,0 +1,119 @@
+# =============================================================================
+# JOB TRACKER CONFIG
+# Edit section 1 (your profile). Sections 2-4 have working defaults.
+# =============================================================================
+
+# ---- 1. YOUR PROFILE --------------------------------------------------------
+# Used for the Remotive and Apify searches. Keep to 2-3 terms (Apify cost scales with it).
+search_terms:            # up to 5; "react" keeps results relevant so you don't pay for rows that get filtered out
+  - full stack developer react
+  - frontend developer react
+  - software developer react
+  - SDE 2 react
+
+# A job title must match one include pattern and no exclude pattern (regex, case-insensitive).
+title_include:
+  - '\bsde[\s-]*(2|ii)\b'
+  - 'software (development )?engineer[\s,:-]*(2|ii)\b'
+  - 'software (developer|engineer)'
+  - '\bsde\b'
+  - 'senior software engineer'
+  - 'web developer'
+  - 'front[\s-]?end'
+  - 'full[\s-]?stack'
+  - 'ui engineer'
+  - '\breact\b'
+title_exclude:
+  - '\bintern(ship)?\b'
+  - 'trainee'
+  - 'junior'
+  - '\bsde[\s-]*(1|i)\b'
+  - '\bsde[\s-]*(3|iii)\b'
+  - '\bstaff\b'
+  - 'principal'
+  - 'director'
+  - 'manager'
+  - 'head of'
+  - '\bvp\b'
+  - 'architect'
+  - 'back[\s-]?end'
+  - '\b(ios|android)\b'
+  - 'devops|\bsre\b'
+  - 'data (engineer|scientist)'
+  - 'machine learning|\bml\b'
+  - 'in test|\bsdet\b|\bqa\b|quality'
+
+# Skills are matched against title + description.
+skills: [react, typescript, javascript, next.js, redux, zustand, tanstack, react query,
+         graphql, websocket, jest, testing library, cypress, playwright, node]
+min_skill_matches: 2
+# A job must mention at least one of these (drops roles outside your core stack).
+must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query]
+
+# Your experience band. A job passes if its required years overlap min..max.
+experience:
+  min: 3
+  max: 4
+  include_unspecified: true   # keep jobs that don't state years (shown as —)
+
+# any = openings from anywhere; filter = only the locations below (+ remote if remote_ok)
+location_mode: any
+locations: [india, gurgaon, gurugram, delhi, noida, bengaluru, bangalore, hyderabad, pune]
+remote_ok: true
+
+new_days: 3                   # mark jobs first seen in the last N days
+report_days: 30                # JOBS.md lists jobs day by day for this many days; older go under 'Earlier'
+
+# ---- 2. FREE SOURCES (public job-board APIs, no keys needed) ---------------
+# Slug = the part after boards.greenhouse.io/ , jobs.lever.co/ , jobs.ashbyhq.com/
+# Wrong slugs just log a warning. Add the companies YOU care about.
+sources:
+  greenhouse: [stripe, airbnb, databricks, cloudflare, twilio]
+  lever: [cred, meesho]
+  ashby: [notion]
+  remoteok: true
+  # remotive_queries: [react, frontend]   # defaults to search_terms (max 3/day)
+
+# ---- 3. APIFY (OPTIONAL: LinkedIn + Naukri; needs APIFY_TOKEN secret) -------
+# Pay-per-result. Cost per run <= maxResults x sites x search_terms x $0.005.
+apify:
+  enabled: true               # no token = skipped automatically
+  min_interval_days: 2
+  retention_days: 14
+  max_charge_usd: 1.0         # hard spend cap per run
+  timeout_s: 900
+  actors:
+    - id: openclawai/job-board-scraper
+      min_skill_matches: 1
+      input:                    # searchTerms come from section 1; add `location:` to narrow
+        sites: [linkedin, naukri]
+        maxResults: 15              # per site, per search term (4 terms x 2 sites x 15 = 120 rows max, ~$0.60)
+        hoursOld: 72
+        linkedinFetchDescription: true
+        descriptionFormat: markdown
+      map:                      # tracker field -> Actor output keys (first non-empty wins)
+        id: [id, job_url]
+        source: [site]
+        title: [title]
+        company: [company]
+        location: [location]
+        url: [job_url, job_url_direct]
+        desc: [description, skills]
+        experience: [experience_range]
+        remote: [is_remote]
+
+# ---- 4. SEARCH SHORTCUTS (shown in JOBS.md; never scraped) -----------------
+# Replace with your own saved searches: filter on the site, copy the address bar URL.
+search_links:
+  - name: LinkedIn
+    url: "https://www.linkedin.com/jobs/search/?keywords=frontend%20engineer%20react&f_TPR=r86400&sortBy=DD"
+  - name: Naukri
+    url: "https://www.naukri.com/frontend-developer-jobs?experience=4&jobAge=1"
+  - name: Wellfound
+    url: "https://wellfound.com/role/l/frontend-engineer/india"
+  - name: Instahyre
+    url: "https://www.instahyre.com/candidate/opportunities/"
+  - name: Hirist
+    url: "https://www.hirist.tech/"
+
+user_agent: "job-tracker/1.0 (personal GitHub Action)"
