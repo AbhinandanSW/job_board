@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import requests
@@ -29,6 +30,15 @@ SESSION.headers["User-Agent"] = CFG.get("user_agent", "job-tracker/1.0")
 
 def warn(msg):
     print(f"::warning::{msg}", file=sys.stderr)
+
+
+def report(line):
+    """Print a status line and add it to the Actions run summary page."""
+    print(line)
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"- {line}\n")
 
 
 def get_json(url, **kw):
@@ -172,6 +182,7 @@ def collect():
             except Exception as e:  # one bad source must not kill the run
                 failed.add(sc)
                 warn(f"{kind} {a or ''} failed: {e}")
+    report(f"Free feeds: {len(tried) - len(failed)}/{len(tried)} sources OK" + (f", failed: {', '.join(sorted(failed))}" if failed else ""))
     return jobs, tried - failed
 
 
@@ -244,21 +255,30 @@ def matched_skills(job):
     return [s for s, rx in SKILLS.items() if rx.search(text)]
 
 
-def filter_jobs(jobs):
-    out, seen_ids = [], set()
+def filter_jobs(jobs, label=""):
+    out, seen_ids, drops = [], set(), Counter()
     for j in jobs:
-        if j["id"] in seen_ids or not title_ok(j["title"]) or not location_ok(j):
-            continue
-        if not experience_ok(j):
-            continue
-        skills = matched_skills(j)
-        if MUST and not MUST.intersection(x.lower() for x in skills):
-            continue
-        if len(skills) < j.get("min_skills", CFG.get("min_skill_matches", 1)):
-            continue
-        seen_ids.add(j["id"])
-        j["skills"] = skills
-        out.append(j)
+        if j["id"] in seen_ids:
+            drops["duplicate"] += 1
+        elif not title_ok(j["title"]):
+            drops["title"] += 1
+        elif not location_ok(j):
+            drops["location"] += 1
+        elif not experience_ok(j):
+            drops["experience"] += 1
+        else:
+            skills = matched_skills(j)
+            if MUST and not MUST.intersection(x.lower() for x in skills):
+                drops["no core skill (react etc.)"] += 1
+            elif len(skills) < j.get("min_skills", CFG.get("min_skill_matches", 1)):
+                drops["too few skills"] += 1
+            else:
+                seen_ids.add(j["id"])
+                j["skills"] = skills
+                out.append(j)
+    if label:
+        why = ", ".join(f"{k} {v}" for k, v in drops.most_common())
+        report(f"{label}: {len(jobs)} fetched, {len(out)} kept" + (f" (dropped: {why})" if why else ""))
     return out
 
 
@@ -354,9 +374,10 @@ def apify_jobs(today, store):
     token = os.environ.get("APIFY_TOKEN")
 
     if not due:
+        report(f"Apify: skipped (last run {last}; runs every {APIFY.get('min_interval_days', 2)} days; use Run workflow to force)")
         return [], set()
     if not token:
-        print("::notice::APIFY_TOKEN not set; skipping Apify sources (optional)")
+        report("Apify: SKIPPED because the APIFY_TOKEN secret is missing or empty")
         return [], set()
 
     raw, ok, ran = [], set(), False
@@ -376,7 +397,16 @@ def apify_jobs(today, store):
                 ok.add(scope(j["id"]))  # only boards that actually returned rows count as fetched
     if ran:
         store["last_apify_run"] = today.isoformat()
-    return filter_jobs(raw), ok
+    else:
+        report("Apify: every Actor run failed (see warnings above)")
+    counts = Counter(scope(j["id"]) for j in raw)
+    asked = {x for a in APIFY.get("actors", []) for x in a["input"].get("sites", [])}
+    for site in sorted(asked - set(counts)):
+        if ran:
+            warn(f"Apify returned no rows for '{site}' (blocked, or nothing matched the search)")
+    if ran:
+        report("Apify rows by site: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none"))
+    return filter_jobs(raw, "Apify"), ok
 
 
 # ----------------------------- store ---------------------------------------
@@ -413,7 +443,7 @@ def main(today=None):
 
     free, ok = collect()
     apify_fresh, apify_ok = apify_jobs(today, store)
-    fresh = dedupe(filter_jobs(free) + apify_fresh)
+    fresh = dedupe(filter_jobs(free, "Free feeds") + apify_fresh)
     ok |= apify_ok
 
     seen_now = set()

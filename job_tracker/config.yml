@@ -74,23 +74,27 @@ sources:
   remoteok: true
   # remotive_queries: [react, frontend]   # defaults to search_terms (max 3/day)
 
-# ---- 3. APIFY (OPTIONAL: LinkedIn + Naukri; needs APIFY_TOKEN secret) -------
-# Pay-per-result. Cost per run <= maxResults x sites x search_terms x $0.005.
+# ---- 3. APIFY (OPTIONAL: LinkedIn + Naukri + Glassdoor; needs APIFY_TOKEN secret) ----
+# Pay-per-result ($0.005/job) PLUS Apify's own proxy charges (residential proxy is billed per GB
+# against your Apify credit). Watch Apify Console -> Billing after the first run.
+# LinkedIn and Naukri block scrapers often, so each board can return few or no rows on a given day.
 apify:
   enabled: true               # no token = skipped automatically
   min_interval_days: 2
-  max_charge_usd: 1.0         # hard spend cap per run
+  max_charge_usd: 1.5         # hard cap on per-result charges for each Actor run
   timeout_s: 900
   actors:
+    # Run 1: LinkedIn + Glassdoor
     - id: openclawai/job-board-scraper
       min_skill_matches: 1
       input:                    # searchTerms come from section 1; add `location:` to narrow
-        sites: [linkedin, naukri]
-        maxResults: 15              # per site, per search term (4 terms x 2 sites x 15 = 120 rows max, ~$0.60)
+        sites: [linkedin, glassdoor]
+        countryIndeed: india    # needed by Glassdoor for country targeting
+        maxResults: 15          # per site, per search term
         hoursOld: 72
-        linkedinFetchDescription: true
+        linkedinFetchDescription: true   # needed so the skills filter has text
         descriptionFormat: markdown
-      map:                      # tracker field -> Actor output keys (first non-empty wins)
+      map: &job_map             # tracker field -> Actor output keys (first non-empty wins)
         id: [id, job_url]
         source: [site]
         title: [title]
@@ -100,6 +104,19 @@ apify:
         desc: [description, skills]
         experience: [experience_range]
         remote: [is_remote]
+    # Run 2: Naukri on its own, through an India residential IP (Naukri blocks datacenter IPs).
+    # Kept separate so you can tune or disable it without touching run 1.
+    - id: openclawai/job-board-scraper
+      min_skill_matches: 1
+      input:
+        sites: [naukri]
+        maxResults: 15
+        hoursOld: 72            # if Naukri returns nothing, try deleting this line
+        proxyConfiguration:
+          useApifyProxy: true
+          apifyProxyGroups: [RESIDENTIAL]
+          apifyProxyCountry: IN
+      map: *job_map
 
 # ---- 4. SEARCH SHORTCUTS (shown at the bottom of the dashboard; never scraped) -----------------
 # Replace with your own saved searches: filter on the site, copy the address bar URL.
