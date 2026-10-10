@@ -24,6 +24,7 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
 .new{color:var(--new);font-weight:600;font-size:12px;margin-left:6px}
 .act{display:flex;gap:6px}.act button{padding:3px 10px;font-size:13px}
 .day{font-size:14px;color:var(--mut);margin:22px 0 4px;font-weight:600}
+.card.closed{opacity:.6}.gone{font-size:12px;color:var(--mut);margin-left:6px;font-weight:400}
 .empty{color:var(--mut);text-align:center;padding:40px 0}
 </style>
 </head>
@@ -31,6 +32,11 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
 <main>
   <h1>Job openings</h1>
   <div class="sub" id="upd">Loading…</div>
+  <div class="bar" style="align-items:center">
+    <button id="run">▶ Run now</button>
+    <span class="meta" id="runmsg"></span>
+    <button id="forget" style="margin-left:auto;font-size:12px;padding:3px 8px">Forget token</button>
+  </div>
   <div class="bar tabs" id="tabs"></div>
   <div class="bar">
     <input type="search" id="q" placeholder="Search title, company, location, skill…">
@@ -38,6 +44,7 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
     <button id="newonly">New only</button>
   </div>
   <div id="list"></div>
+  <div id="links" class="meta" style="margin-top:30px"></div>
 </main>
 <script>
 const KEY = "jobstatus:v1", TABS = ["open", "saved", "applied", "hidden"];
@@ -49,15 +56,65 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const status = j => st[j.id] || "open";
 const isNew = j => (Date.now() - new Date(j.first_seen)) / 864e5 <= 3;
 
-fetch("jobs.json", { cache: "no-store" })
-  .then(r => r.json())
-  .then(d => {
-    data = d.jobs;
-    $("upd").textContent = `${data.length} matches · updated ${d.updated}`;
-    [...new Set(data.map(j => j.source))].sort().forEach(s => $("src").add(new Option(s, s)));
-    render();
-  })
-  .catch(() => { $("upd").textContent = "Could not load jobs.json"; });
+function load() {
+  return fetch("jobs.json", { cache: "no-store" })
+    .then(r => r.json())
+    .then(d => {
+      data = d.jobs;
+      const links = d.links || [];
+      $("links").innerHTML = links.length ? "Search yourself: " + links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)}</a>`).join(" · ") : "";
+      $("upd").textContent = `${data.length} matches · updated ${d.updated}`;
+      $("src").length = 1;
+      [...new Set(data.map(j => j.source))].sort().forEach(s => $("src").add(new Option(s, s)));
+      render();
+    })
+    .catch(() => { $("upd").textContent = "Could not load jobs.json"; });
+}
+load();
+
+// ---- "Run now": triggers the GitHub Action (needs a token you paste once; stays in this browser) ----
+const FALLBACK = { owner: "AbhinandanSW", repo: "job_board", branch: "main" };
+const onPages = location.hostname.endsWith("github.io");
+const OWNER = onPages ? location.hostname.split(".")[0] : FALLBACK.owner;
+const REPO = onPages ? location.pathname.split("/")[1] : FALLBACK.repo;
+const API = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/job-tracker.yml`;
+const TOKEN_KEY = "ghtoken:v1";
+const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; } };
+const setToken = t => { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {} };
+const clearToken = () => { try { localStorage.removeItem(TOKEN_KEY); } catch (e) {} };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function runNow() {
+  const msg = m => { $("runmsg").textContent = m; };
+  let t = getToken();
+  if (!t) {
+    t = (prompt("Paste a fine-grained GitHub token for THIS repo only (permission: Actions = Read and write). It is stored only in this browser.") || "").trim();
+    if (!t) return;
+    setToken(t);
+  }
+  const H = { Authorization: "Bearer " + t, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+  $("run").disabled = true; msg("Starting…");
+  const t0 = Date.now() - 10000;
+  try {
+    const r = await fetch(API + "/dispatches", { method: "POST", headers: H, body: JSON.stringify({ ref: FALLBACK.branch }) });
+    if ([401, 403, 404].includes(r.status)) { clearToken(); throw new Error(`Token rejected (${r.status}). Click Run now to enter a new one.`); }
+    if (!r.ok) throw new Error("GitHub returned " + r.status);
+    msg("Run started. Checking every 15s…");
+    for (let i = 0; i < 80; i++) {
+      await sleep(15000);
+      const x = await (await fetch(API + "/runs?event=workflow_dispatch&per_page=3", { headers: H })).json();
+      const run = (x.workflow_runs || []).find(w => new Date(w.created_at) >= t0);
+      if (!run) continue;
+      msg("Run " + run.status.replace("_", " ") + "…");
+      if (run.status === "completed") {
+        if (run.conclusion === "success") { msg("Done. Refreshing the list in a minute…"); setTimeout(() => { load(); msg(""); }, 60000); }
+        else msg(`Run ${run.conclusion}. Check the Actions tab for the log.`);
+        break;
+      }
+    }
+  } catch (e) { msg(e.message); }
+  $("run").disabled = false;
+}
 
 function render() {
   $("tabs").innerHTML = TABS.map(t =>
@@ -72,8 +129,8 @@ function render() {
   $("list").innerHTML = rows.length ? rows.map(j => {
     const head = j.day !== last ? `<div class="day">${esc(fmt(j.day))}</div>` : ""; last = j.day;
     return head + `
-    <div class="card">
-      <h2><a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>${isNew(j) ? '<span class="new">NEW</span>' : ""}</h2>
+    <div class="card${j.gone ? " closed" : ""}">
+      <h2><a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>${isNew(j) ? '<span class="new">NEW</span>' : ""}${j.gone ? `<span class="gone">no longer listed</span>` : ""}</h2>
       <div class="meta">${esc(j.company)} · ${esc(j.location)}${j.exp ? " · " + esc(j.exp) : ""} · ${esc(j.source)}</div>
       <div class="chips">${j.skills.map(s => `<span class="chip">${esc(s)}</span>`).join("")}</div>
       <div class="act" data-id="${esc(j.id)}">
@@ -85,6 +142,8 @@ function render() {
 
 document.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
+  if (b.id === "run") { runNow(); return; }
+  if (b.id === "forget") { clearToken(); $("runmsg").textContent = "Token removed from this browser."; return; }
   if (b.dataset.tab) tab = b.dataset.tab;
   else if (b.id === "newonly") newOnly = !newOnly;
   else if (b.dataset.act) {

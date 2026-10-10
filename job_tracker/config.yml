@@ -62,7 +62,7 @@ locations: [india, gurgaon, gurugram, delhi, noida, bengaluru, bangalore, hydera
 remote_ok: true
 
 new_days: 3                   # mark jobs first seen in the last N days
-report_days: 30                # JOBS.md lists jobs day by day for this many days; older go under 'Earlier'
+retention_days: 30            # keep a job this long after it stops being listed (shown as 'no longer listed')
 
 # ---- 2. FREE SOURCES (public job-board APIs, no keys needed) ---------------
 # Slug = the part after boards.greenhouse.io/ , jobs.lever.co/ , jobs.ashbyhq.com/
@@ -79,7 +79,6 @@ sources:
 apify:
   enabled: true               # no token = skipped automatically
   min_interval_days: 2
-  retention_days: 14
   max_charge_usd: 1.0         # hard spend cap per run
   timeout_s: 900
   actors:
@@ -102,7 +101,7 @@ apify:
         experience: [experience_range]
         remote: [is_remote]
 
-# ---- 4. SEARCH SHORTCUTS (shown in JOBS.md; never scraped) -----------------
+# ---- 4. SEARCH SHORTCUTS (shown at the bottom of the dashboard; never scraped) -----------------
 # Replace with your own saved searches: filter on the site, copy the address bar URL.
 search_links:
   - name: LinkedIn

@@ -27,16 +27,17 @@ jobs:
 
       - run: pip install -r job_tracker/requirements.txt
 
-      - name: Fetch, filter and write JOBS.md
+      - name: Fetch, filter and update docs/jobs.json
         run: python job_tracker/track.py
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          FORCE_APIFY: ${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Commit report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A JOBS.md docs job_tracker
+          git add -A docs
           if git diff --staged --quiet; then
             echo "No changes."
           else
