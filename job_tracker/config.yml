@@ -45,20 +45,20 @@ title_exclude:
 
 # Skills are matched against title + description.
 skills: [react, typescript, javascript, next.js, redux, zustand, tanstack, react query,
-         graphql, websocket, jest, testing library, cypress, playwright, node]
+         graphql, websocket, jest, testing library, cypress, playwright, node, mongodb, sql, python]
 min_skill_matches: 2
 # A job must mention at least one of these (drops roles outside your core stack).
-must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query]
+must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query, javascript, html, css, node.js, typescript ]
 
 # Your experience band. A job passes if its required years overlap min..max.
 experience:
   min: 3
-  max: 4
+  max: 5
   include_unspecified: true   # keep jobs that don't state years (shown as —)
 
 # any = openings from anywhere; filter = only the locations below (+ remote if remote_ok)
 location_mode: any
-locations: [india, gurgaon, gurugram, delhi, noida, bengaluru, bangalore, hyderabad, pune]
+locations: [india, gurgaon, gurugram, delhi, noida]
 remote_ok: true
 
 new_days: 3                   # mark jobs first seen in the last N days
