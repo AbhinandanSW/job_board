@@ -4,7 +4,7 @@
 # =============================================================================
 
 # ---- 1. YOUR PROFILE --------------------------------------------------------
-# Used for the Remotive and Apify searches. Keep to 2-3 terms (Apify cost scales with it).
+# Used for the Remotive and OpenClaw (LinkedIn/Naukri/Glassdoor) searches. Each term costs extra on Apify.
 search_terms:            # up to 5; "react" keeps results relevant so you don't pay for rows that get filtered out
   - full stack developer react
   - frontend developer react
@@ -43,12 +43,12 @@ title_exclude:
   - 'machine learning|\bml\b'
   - 'in test|\bsdet\b|\bqa\b|quality'
 
-# Skills are matched against title + description.
+# Skills are matched against title + description (or the skill tags on boards with no description).
 skills: [react, typescript, javascript, next.js, redux, zustand, tanstack, react query,
          graphql, websocket, jest, testing library, cypress, playwright, node, mongodb, sql, python]
 min_skill_matches: 2
 # A job must mention at least one of these (drops roles outside your core stack).
-must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query, javascript, html, css, node.js, typescript ]
+must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query, javascript, html, css, node.js, typescript]
 
 # Your experience band. A job passes if its required years overlap min..max.
 experience:
@@ -56,7 +56,7 @@ experience:
   max: 5
   include_unspecified: true   # keep jobs that don't state years (shown as —)
 
-# any = openings from anywhere; filter = only the locations below (+ remote if remote_ok)
+# any = openings from anywhere in the world (India and abroad); filter = only the locations below
 location_mode: any
 locations: [india, gurgaon, gurugram, delhi, noida]
 remote_ok: true
@@ -66,35 +66,44 @@ retention_days: 30            # keep a job this long after it stops being listed
 
 # ---- 2. FREE SOURCES (public job-board APIs, no keys needed) ---------------
 # Slug = the part after boards.greenhouse.io/ , jobs.lever.co/ , jobs.ashbyhq.com/
-# Wrong slugs just log a warning. Add the companies YOU care about.
+# Wrong slugs just log a warning. Add the companies YOU care about (India and abroad).
 sources:
   greenhouse: [stripe, airbnb, databricks, cloudflare, twilio]
   lever: [cred, meesho]
   ashby: [notion]
-  remoteok: true
-  # remotive_queries: [react, frontend]   # defaults to search_terms (max 3/day)
+  remoteok: true                                   # remote, worldwide
+  himalayas: [react, frontend developer, full stack developer]   # remote, worldwide (needs a link back, see dashboard footer)
+  jobicy: [react, frontend, full stack]            # remote jobs by region
+  arbeitnow: true                                  # Germany / EU tech jobs, many with relocation support
+  # remotive_queries: [react, frontend]            # defaults to search_terms (max 3/day)
 
-# ---- 3. APIFY (OPTIONAL: LinkedIn + Naukri + Glassdoor; needs APIFY_TOKEN secret) ----
-# Pay-per-result ($0.005/job) PLUS Apify's own proxy charges (residential proxy is billed per GB
-# against your Apify credit). Watch Apify Console -> Billing after the first run.
-# LinkedIn and Naukri block scrapers often, so each board can return few or no rows on a given day.
+# ---- 3. APIFY (OPTIONAL; needs the APIFY_TOKEN secret) ----------------------
+# Each Actor is a separate run. Prices are per result; the openclaw Actor also uses residential
+# proxies, billed per GB against your Apify credit. LinkedIn and Naukri block scrapers often, so
+# they can return few or no rows on a given day. Watch Apify Console -> Billing after the first run.
+#
+# Per Actor you can set:
+#   search_terms_field: the Actor's input name for keywords (openclaw: searchTerms, deriverge: keywords)
+#   search_terms:       override the section-1 terms for this Actor (job-board search boxes like short skills)
 apify:
   enabled: true               # no token = skipped automatically
-  min_interval_days: 2
+  min_interval_days: 2        # default for every Actor; override per Actor
   max_charge_usd: 1.5         # hard cap on per-result charges for each Actor run
   timeout_s: 900
   actors:
-    # Run 1: LinkedIn + Glassdoor
+    # --- LinkedIn + Glassdoor (worldwide) --------------------------------------------------------
     - id: openclawai/job-board-scraper
+      name: linkedin-glassdoor
+      min_interval_days: 3      # pricier (per-result + proxy), so run less often
       min_skill_matches: 1
-      input:                    # searchTerms come from section 1; add `location:` to narrow
+      input:
         sites: [linkedin, glassdoor]
-        countryIndeed: india    # needed by Glassdoor for country targeting
+        countryIndeed: india    # Glassdoor country; add `location:` to narrow LinkedIn
         maxResults: 15          # per site, per search term
         hoursOld: 72
         linkedinFetchDescription: true   # needed so the skills filter has text
         descriptionFormat: markdown
-      map: &job_map             # tracker field -> Actor output keys (first non-empty wins)
+      map: &openclaw_map        # tracker field -> Actor output keys (first non-empty wins)
         id: [id, job_url]
         source: [site]
         title: [title]
@@ -104,9 +113,10 @@ apify:
         desc: [description, skills]
         experience: [experience_range]
         remote: [is_remote]
-    # Run 2: Naukri on its own, through an India residential IP (Naukri blocks datacenter IPs).
-    # Kept separate so you can tune or disable it without touching run 1.
+    # --- Naukri, through an India residential IP (Naukri blocks datacenter IPs) ------------------
     - id: openclawai/job-board-scraper
+      name: naukri
+      min_interval_days: 3
       min_skill_matches: 1
       input:
         sites: [naukri]
@@ -116,10 +126,88 @@ apify:
           useApifyProxy: true
           apifyProxyGroups: [RESIDENTIAL]
           apifyProxyCountry: IN
-      map: *job_map
+      map: *openclaw_map
+    # --- Hirist (India tech jobs) - ~$1 per 1,000 jobs, proxies included -------------------------
+    - id: deriverge/hirist-jobs-scraper
+      name: hirist
+      search_terms_field: keywords
+      search_terms: [react, frontend developer, full stack developer, software developer]
+      min_skill_matches: 1
+      input:
+        postedWithinDays: 14
+        includeDescription: true
+        maxItems: 100
+      map:
+        id: [jobId]
+        source_label: hirist
+        title: [title]
+        company: [company]
+        location: [locations]
+        url: [url]
+        desc: [description, skills]
+        experience_min: [experienceMin]
+        experience_max: [experienceMax]
+        posted: [postedAt]
+        remote: [remote]
+    # --- Instahyre (India tech jobs) - ~$0.30 per 1,000 jobs; no descriptions, so skills come from tags
+    - id: deriverge/instahyre-jobs-scraper
+      name: instahyre
+      search_terms_field: keywords
+      search_terms: [react, frontend developer, full stack developer]
+      min_skill_matches: 1
+      input:
+        experienceYears: 4      # Instahyre's own filter: jobs that fit someone with this many years
+        maxItems: 100
+      map:
+        id: [jobId]
+        source_label: instahyre
+        title: [title]
+        company: [company]
+        location: [locations]
+        url: [url]
+        desc: [skills, companyAbout]
+        remote: [workFromHome]
+    # --- Foundit (ex-Monster) India - ~$0.50 per 1,000 jobs -------------------------------------
+    - id: deriverge/foundit-jobs-scraper
+      name: foundit-india
+      search_terms_field: keywords
+      search_terms: [react, frontend developer, full stack developer, software developer]
+      min_skill_matches: 1
+      input:
+        postedWithinDays: "14"
+        sortBy: date
+        maxItems: 100
+      map: &foundit_map
+        id: [jobId]
+        source_label: foundit
+        title: [title]
+        company: [company]
+        location: [location]
+        url: [url]
+        desc: [description, skills]
+        experience_min: [experienceMin]
+        experience_max: [experienceMax]
+        posted: [postedAt]
+        remote: [workFromHome]
+    # --- Foundit Gulf (UAE, Saudi Arabia, Qatar): jobs outside India ------------------------------
+    - id: deriverge/foundit-jobs-scraper
+      name: foundit-gulf
+      search_terms_field: keywords
+      search_terms: [react, frontend developer, full stack developer]
+      min_skill_matches: 1
+      input:
+        site: GULF
+        countries: [United Arab Emirates, Saudi Arabia, Qatar]
+        postedWithinDays: "14"
+        sortBy: date
+        maxItems: 80
+      map:
+        <<: *foundit_map
+        source_label: foundit-gulf
 
 # ---- 4. SEARCH SHORTCUTS (shown at the bottom of the dashboard; never scraped) -----------------
-# Replace with your own saved searches: filter on the site, copy the address bar URL.
+# Sites that are not fetched automatically. Replace with your own saved searches:
+# filter on the site, then copy the address bar URL.
 search_links:
   - name: LinkedIn
     url: "https://www.linkedin.com/jobs/search/?keywords=frontend%20engineer%20react&f_TPR=r86400&sortBy=DD"
@@ -127,9 +215,5 @@ search_links:
     url: "https://www.naukri.com/frontend-developer-jobs?experience=4&jobAge=1"
   - name: Wellfound
     url: "https://wellfound.com/role/l/frontend-engineer/india"
-  - name: Instahyre
-    url: "https://www.instahyre.com/candidate/opportunities/"
-  - name: Hirist
-    url: "https://www.hirist.tech/"
 
 user_agent: "job-tracker/1.0 (personal GitHub Action)"
