@@ -2,7 +2,8 @@ name: Job opening tracker
 
 on:
   schedule:
-    - cron: "30 3 * * *" # 09:00 IST daily
+    - cron: "7 3 * * *"   # 08:37 IST - early, odd minute so a short GitHub delay still lands ~9:00 IST
+    - cron: "47 3 * * *"  # 09:17 IST - backup in case the first run is dropped
   workflow_dispatch:
 
 permissions:
