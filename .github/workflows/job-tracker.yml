@@ -1,17 +1,19 @@
 name: Job opening tracker
 
 on:
-  schedule:
-    - cron: "7 3 * * *"   # 08:37 IST - early, odd minute so a short GitHub delay still lands ~9:00 IST
-    - cron: "47 3 * * *"  # 09:17 IST - backup in case the first run is dropped
-  workflow_dispatch:
+  workflow_dispatch:       # manual only: triggered by the "Run now" button in docs/
+    inputs:
+      force_apify:
+        description: "Force a fresh Apify fetch (skip any cache/skip logic)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 concurrency:
   group: job-tracker
-  cancel-in-progress: false
+  cancel-in-progress: false   # a button click during a run queues instead of killing it
 
 jobs:
   track:
@@ -32,7 +34,7 @@ jobs:
         run: python job_tracker/track.py
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
-          FORCE_APIFY: ${{ github.event_name == 'workflow_dispatch' }}
+          FORCE_APIFY: ${{ inputs.force_apify }}
 
       - name: Commit report
         run: |
@@ -43,5 +45,6 @@ jobs:
             echo "No changes."
           else
             git commit -m "chore: update job openings"
+            git pull --rebase
             git push
           fi
