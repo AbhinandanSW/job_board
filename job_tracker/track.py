@@ -156,6 +156,66 @@ def remoteok(_=None):
         )
 
 
+def himalayas(query):
+    """Himalayas public API (remote jobs, worldwide). Docs: himalayas.app/docs/remote-jobs-api"""
+    for page in (1, 2):
+        data = get_json(
+            "https://himalayas.app/jobs/api/search",
+            params={"q": query, "sort": "recent", "page": page},
+        )
+        rows = data.get("jobs", [])
+        for j in rows:
+            places = [x.get("name", "") for x in (j.get("locationRestrictions") or []) if isinstance(x, dict)]
+            seniority = j.get("seniority") or []
+            yield dict(
+                id=f"himalayas:{j.get('guid') or j.get('applicationLink')}",
+                title=j.get("title", ""),
+                company=j.get("companyName", ""),
+                location=", ".join(places) or "Worldwide (remote)",
+                url=j.get("applicationLink", ""),
+                desc=f"{j.get('excerpt', '')} {clean(j.get('description'))} {' '.join(seniority)}",
+                remote=True,
+                posted=j.get("pubDate"),
+            )
+        if len(rows) < 20:
+            break
+
+
+def jobicy(tag):
+    """Jobicy public API (remote jobs). Docs: jobicy.com/jobs-rss-feed"""
+    data = get_json("https://jobicy.com/api/v2/remote-jobs", params={"count": 50, "tag": tag})
+    for j in data.get("jobs", []):
+        yield dict(
+            id=f"jobicy:{j['id']}",
+            title=j.get("jobTitle", ""),
+            company=j.get("companyName", ""),
+            location=j.get("jobGeo") or "Anywhere",
+            url=j.get("url", ""),
+            desc=f"{clean(j.get('jobDescription'))} {j.get('jobExcerpt', '')} {j.get('jobLevel', '')}",
+            remote=True,
+            posted=j.get("pubDate"),
+        )
+
+
+def arbeitnow(_=None):
+    """Arbeitnow public API (Germany / EU tech jobs, many with relocation or visa support)."""
+    for page in (1, 2, 3):
+        rows = get_json("https://www.arbeitnow.com/api/job-board-api", params={"page": page}).get("data", [])
+        for j in rows:
+            yield dict(
+                id=f"arbeitnow:{j['slug']}",
+                title=j.get("title", ""),
+                company=j.get("company_name", ""),
+                location=j.get("location") or ("Remote" if j.get("remote") else ""),
+                url=j.get("url", ""),
+                desc=f"{clean(j.get('description'))} {' '.join(j.get('tags') or [])}",
+                remote=bool(j.get("remote")),
+                posted=j.get("created_at"),
+            )
+        if not rows:
+            break
+
+
 def scope(job_id):
     """Which feed a job came from: 'gh:stripe', 'lever:cred', 'remotive', 'linkedin' ..."""
     p = job_id.split(":")
@@ -171,11 +231,14 @@ def collect():
         ("ashby", ashby, src.get("ashby", [])),
         ("remotive", remotive, src.get("remotive_queries") or CFG.get("search_terms", [])[:3]),
         ("remoteok", remoteok, [None] if src.get("remoteok") else []),
+        ("himalayas", himalayas, src.get("himalayas", [])),
+        ("jobicy", jobicy, src.get("jobicy", [])),
+        ("arbeitnow", arbeitnow, [None] if src.get("arbeitnow") else []),
     ]
     jobs, tried, failed = [], set(), set()
     for kind, fn, args in plan:
         for a in args:
-            sc = kind if kind in ("remotive", "remoteok") else f"{kind}:{a}"
+            sc = kind if kind in ("remotive", "remoteok", "himalayas", "jobicy", "arbeitnow") else f"{kind}:{a}"
             tried.add(sc)
             try:
                 jobs.extend(fn(a))
@@ -295,6 +358,17 @@ def dedupe(jobs):
 
 
 # ----------------------------- apify ---------------------------------------
+def build_payload(actor, extra=None):
+    """Actor input = search terms (field name differs per Actor) + its `input:` block + overrides."""
+    payload = {}
+    field = actor.get("search_terms_field", "searchTerms")  # set to null to send none
+    if field:
+        payload[field] = actor.get("search_terms") or CFG.get("search_terms", [])
+    payload.update(actor["input"])
+    payload.update(extra or {})
+    return payload
+
+
 def apify_run(actor, token, extra=None):
     """Start an Actor run, poll until it finishes, return its dataset items."""
     slug = actor["id"].replace("/", "~")
@@ -307,7 +381,7 @@ def apify_run(actor, token, extra=None):
     r = SESSION.post(
         f"https://api.apify.com/v2/acts/{slug}/runs",
         headers=headers, params=params,
-        json={"searchTerms": CFG.get("search_terms", []), **actor["input"], **(extra or {})},
+        json=build_payload(actor, extra),
         timeout=60,
     )
     r.raise_for_status()
@@ -339,14 +413,19 @@ def _first(item, keys):
 
 
 def _text(v):
-    return " ".join(map(str, v)) if isinstance(v, list) else ("" if v is None else str(v))
+    return ", ".join(map(str, v)) if isinstance(v, list) else ("" if v is None else str(v))
 
 
 def map_item(item, m):
     """Map one Actor output record to the tracker's job dict using config field names."""
-    site = _text(_first(item, m.get("source", ["site"]))) or "apify"
+    site = m.get("source_label") or _text(_first(item, m.get("source", ["site"]))) or "apify"
     raw_id = _text(_first(item, m["id"]))
     remote_keys = m.get("remote", [])
+    exp_text = _text(_first(item, m.get("experience", [])))
+    if not exp_text and (m.get("experience_min") or m.get("experience_max")):
+        lo = _first(item, m.get("experience_min", []))
+        hi = _first(item, m.get("experience_max", []))
+        exp_text = f"{lo}-{hi} yrs" if lo != "" and hi != "" else (f"{lo}+ yrs" if lo != "" else "")
     return dict(
         id=f"{site}:{raw_id}",
         title=_text(_first(item, m["title"])),
@@ -354,7 +433,7 @@ def map_item(item, m):
         location=_text(_first(item, m["location"])),
         url=_text(_first(item, m["url"])),
         desc=" ".join(_text(item.get(k)) for k in m["desc"]),
-        exp_text=_text(_first(item, m.get("experience", []))),
+        exp_text=exp_text,
         posted=_text(_first(item, m.get("posted", ["date_posted"]))),
         remote=bool(_first(item, remote_keys)) if remote_keys else False,
         has_id=bool(raw_id),
@@ -362,59 +441,69 @@ def map_item(item, m):
 
 
 def apify_jobs(today, store):
-    """Run Apify Actors if due. Returns (fresh matching jobs, feeds fetched)."""
+    """Run the Apify Actors that are due. Returns (fresh matching jobs, feeds fetched).
+
+    Each Actor has its own schedule (`min_interval_days`, default from the apify section), so cheap
+    Actors can run more often than expensive ones. A manual run (FORCE_APIFY=true) runs them all.
+    """
     if not APIFY.get("enabled"):
         return [], set()
-    last = store.get("last_apify_run")
-    gap = (today - dt.date.fromisoformat(last)).days if last else None
-    forced = os.environ.get("FORCE_APIFY") == "true"  # manual "Run now" always fetches
-    due = forced or gap is None or gap >= APIFY.get("min_interval_days", 2)
-    # Catch-up window: after missed days, look back further so nothing slips through.
-    hours = 168 if gap is None else min((gap + 2) * 24, 336)
+    runs = store.setdefault("apify_runs", {})
+    forced = os.environ.get("FORCE_APIFY") == "true"
     token = os.environ.get("APIFY_TOKEN")
 
-    if not due:
-        report(f"Apify: skipped (last run {last}; runs every {APIFY.get('min_interval_days', 2)} days; use Run workflow to force)")
-        return [], set()
-    if not token:
-        report("Apify: SKIPPED because the APIFY_TOKEN secret is missing or empty")
-        return [], set()
-
-    raw, ok, ran = [], set(), False
-    for actor in APIFY.get("actors", []):
-        try:
-            window = max(actor["input"].get("hoursOld", 72), hours)
-            items = apify_run(actor, token, {"hoursOld": window})
-        except Exception as e:
-            warn(f"apify {actor['id']} failed: {e}")
+    raw, ok, warned_token = [], set(), False
+    for idx, actor in enumerate(APIFY.get("actors", [])):
+        key = actor.get("name") or f"{idx}:{actor['id']}"
+        last = runs.get(key)
+        gap = (today - dt.date.fromisoformat(last)).days if last else None
+        interval = actor.get("min_interval_days", APIFY.get("min_interval_days", 2))
+        if not (forced or gap is None or gap >= interval):
+            report(f"Apify {key}: skipped (ran {last}; every {interval} days; use Run workflow to force)")
             continue
-        ran = True
+        if not token:
+            if not warned_token:
+                report("Apify: SKIPPED because the APIFY_TOKEN secret is missing or empty")
+                warned_token = True
+            continue
+        # Catch-up window: after missed days, look back further so nothing slips through.
+        hours = 168 if gap is None else min((gap + 2) * 24, 336)
+        extra = {}
+        if "hoursOld" in actor["input"]:
+            extra["hoursOld"] = max(actor["input"]["hoursOld"], hours)
+        if "postedWithinDays" in actor["input"]:
+            cur = actor["input"]["postedWithinDays"]
+            days = max(int(cur), -(-hours // 24))
+            extra["postedWithinDays"] = str(days) if isinstance(cur, str) else days
+        try:
+            items = apify_run(actor, token, extra)
+        except Exception as e:
+            warn(f"apify {key} failed: {e}")
+            continue
+        runs[key] = today.isoformat()
+        got = Counter()
         for it in items:
             j = map_item(it, actor["map"])
             if j.pop("has_id") and j["title"] and j["url"]:
                 j["min_skills"] = actor.get("min_skill_matches", CFG.get("min_skill_matches", 1))
                 raw.append(j)
-                ok.add(scope(j["id"]))  # only boards that actually returned rows count as fetched
-    if ran:
-        store["last_apify_run"] = today.isoformat()
-    else:
-        report("Apify: every Actor run failed (see warnings above)")
-    counts = Counter(scope(j["id"]) for j in raw)
-    asked = {x for a in APIFY.get("actors", []) for x in a["input"].get("sites", [])}
-    for site in sorted(asked - set(counts)):
-        if ran:
-            warn(f"Apify returned no rows for '{site}' (blocked, or nothing matched the search)")
-    if ran:
-        report("Apify rows by site: " + (", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "none"))
-    return filter_jobs(raw, "Apify"), ok
+                ok.add(scope(j["id"]))  # only feeds that actually returned rows count as fetched
+                got[scope(j["id"])] += 1
+        report(f"Apify {key}: " + (", ".join(f"{k} {v}" for k, v in sorted(got.items())) or "0 rows"))
+        for site in actor["input"].get("sites", []):
+            if site not in got and items:
+                warn(f"Apify {key}: no rows for '{site}' (blocked, or nothing matched)")
+        if not items:
+            warn(f"Apify {key}: returned 0 rows (blocked, or nothing matched the search)")
+    return (filter_jobs(raw, "Apify") if raw else []), ok
 
 
 # ----------------------------- store ---------------------------------------
 def load_store():
     if STORE_PATH.exists():
         d = json.loads(STORE_PATH.read_text())
-        return {"last_apify_run": d.get("last_apify_run"), "jobs": {j["id"]: j for j in d.get("jobs", [])}}
-    return {"last_apify_run": None, "jobs": {}}
+        return {"apify_runs": d.get("apify_runs") or {}, "jobs": {j["id"]: j for j in d.get("jobs", [])}}
+    return {"apify_runs": {}, "jobs": {}}
 
 
 def save_store(store):
@@ -424,7 +513,7 @@ def save_store(store):
         key=lambda j: (j["day"], j["first_seen"], len(j["skills"])),
         reverse=True,
     )
-    meta = {"last_apify_run": store.get("last_apify_run"), "links": CFG.get("search_links") or []}
+    meta = {"apify_runs": store.get("apify_runs") or {}, "links": CFG.get("search_links") or []}
     old = json.loads(STORE_PATH.read_text()) if STORE_PATH.exists() else {}
     if old.get("jobs") == jobs and all(old.get(k) == v for k, v in meta.items()):
         return False
