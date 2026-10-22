@@ -25,6 +25,7 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
 .act{display:flex;gap:6px}.act button{padding:3px 10px;font-size:13px}
 .day{font-size:14px;color:var(--mut);margin:22px 0 4px;font-weight:600}
 .card.closed{opacity:.6}.gone{font-size:12px;color:var(--mut);margin-left:6px;font-weight:400}
+.filt{margin:4px 0}.filt button{font-size:13px;padding:3px 10px;border-radius:999px}
 .empty{color:var(--mut);text-align:center;padding:40px 0}
 </style>
 </head>
@@ -43,6 +44,7 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
     <select id="src"><option value="">All sources</option></select>
     <button id="newonly">New only</button>
   </div>
+  <div id="filters"></div>
   <div id="list"></div>
   <div id="links" class="meta" style="margin-top:30px"></div>
   <div class="meta" style="margin-top:14px;font-size:12px">Job data from company career boards (Greenhouse, Lever, Ashby),
@@ -71,7 +73,7 @@ function load() {
       data = d.jobs.map(j => ({ ...j, m: true })).concat(o.map(j => ({ ...j, m: false, skills: [] })));
       const links = d.links || [];
       $("links").innerHTML = links.length ? "Search yourself: " + links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)}</a>`).join(" · ") : "";
-      $("upd").textContent = `${d.jobs.length} matches · ${o.length} others · updated ${d.updated}`;
+      $("upd").textContent = `${d.jobs.length} for you · ${o.length} general · updated ${d.updated}`;
       $("src").length = 1;
       [...new Set(data.map(j => j.source))].sort().forEach(s => $("src").add(new Option(s, s)));
       render();
@@ -124,18 +126,45 @@ async function runNow() {
   $("run").disabled = false;
 }
 
-const WHY = { title: "title not on your list", location: "location", "no core skill (react etc.)": "no React/core skill", "too few skills": "too few skills" };
+const WHY = { title: "title not on your list", location: "location", "no core skill (react etc.)": "no core skill", "too few skills": "too few skills" };
 const whyText = j => (j.why === "experience" ? "experience" + (j.exp ? " " + j.exp : "") : WHY[j.why] || j.why);
-const label = t => (t === "open" ? "Matches" : t[0].toUpperCase() + t.slice(1));
+const label = t => ({ open: "For you", others: "General" }[t] || t[0].toUpperCase() + t.slice(1));
 const inTab = (j, t) => (t === "open" ? j.m && status(j) === "open" : t === "others" ? !j.m && status(j) === "open" : status(j) === t);
 
+// ---- filters: role (from the title), location (India / outside / remote anywhere), work mode ----
+const F = { role: "all", region: "all", mode: "all" };
+const GROUPS = {
+  role: [["all", "All roles"], ["frontend", "Frontend"], ["fullstack", "Full stack"], ["software", "Software / SDE"], ["backend", "Backend"], ["other", "Other"]],
+  region: [["all", "All locations"], ["india", "India"], ["abroad", "Outside India"], ["anywhere", "Remote anywhere"]],
+  mode: [["all", "WFH + Office"], ["wfh", "WFH / Remote"], ["wfo", "Office"]],
+};
+const IN_RE = /india|bengaluru|bangalore|mumbai|delhi|gurgaon|gurugram|noida|hyderabad|pune|chennai|kolkata|ahmedabad|jaipur|kochi|cochin|indore|chandigarh|mohali|coimbatore|nagpur|lucknow|vadodara|surat|bhubaneswar|thiruvananthapuram|mysuru|mysore|\bncr\b|karnataka|maharashtra|telangana|tamil nadu|haryana|uttar pradesh/i;
+const ROLE_RE = {
+  frontend: /front[\s-]?end|react|next[\s.]?js|\bui\b|ui\/ux|angular|\bvue|svelte|web (developer|engineer)|javascript|\bjs\b/i,
+  fullstack: /full[\s-]?stack|\bmern\b|\bmean\b/i,
+  software: /software|\bsde\b|\bswe\b/i,
+  backend: /back[\s-]?end|\bjava\b|python|golang|node/i,
+};
+const roleOf = j => { const r = Object.keys(ROLE_RE).filter(k => ROLE_RE[k].test(j.title)); return r.length ? r : ["other"]; };
+const isRemote = j => !!j.remote || /remote|work from home|wfh|anywhere|worldwide/i.test(j.location || "");
+const regionOf = j => {
+  const l = j.location || "";
+  if (IN_RE.test(l)) return "india";
+  return !l.trim() || /anywhere|worldwide|global|everywhere|^\s*remote\s*$/i.test(l) ? "anywhere" : "abroad";
+};
+const hit = (g, id, j) => id === "all" || (g === "role" ? roleOf(j).includes(id) : g === "region" ? regionOf(j) === id : (id === "wfh") === isRemote(j));
+
 function render() {
-  $("tabs").innerHTML = TABS.map(t =>
-    `<button data-tab="${t}" class="${t === tab ? "on" : ""}">${label(t)} (${data.filter(j => inTab(j, t)).length})</button>`).join("");
-  $("newonly").className = newOnly ? "on" : "";
   const q = $("q").value.toLowerCase(), src = $("src").value;
-  const all = data.filter(j => inTab(j, tab) && (!src || j.source === src) && (!newOnly || isNew(j)) &&
-    (!q || [j.title, j.company, j.location, ...j.skills].join(" ").toLowerCase().includes(q)));
+  const pass = (j, skip) => (!src || j.source === src) && (!newOnly || isNew(j)) &&
+    (!q || [j.title, j.company, j.location, ...j.skills].join(" ").toLowerCase().includes(q)) &&
+    (skip === "role" || hit("role", F.role, j)) && (skip === "region" || hit("region", F.region, j)) && (skip === "mode" || hit("mode", F.mode, j));
+  $("tabs").innerHTML = TABS.map(t =>
+    `<button data-tab="${t}" class="${t === tab ? "on" : ""}">${label(t)} (${data.filter(j => inTab(j, t) && pass(j)).length})</button>`).join("");
+  $("newonly").className = newOnly ? "on" : "";
+  $("filters").innerHTML = Object.keys(GROUPS).map(g => `<div class="bar filt">${GROUPS[g].map(([id, name]) =>
+    `<button data-f="${g}:${id}" class="${F[g] === id ? "on" : ""}">${name} (${data.filter(j => inTab(j, tab) && pass(j, g) && hit(g, id, j)).length})</button>`).join("")}</div>`).join("");
+  const all = data.filter(j => inTab(j, tab) && pass(j));
   all.sort((a, b) => (b.day || "").localeCompare(a.day || ""));
   const rows = all.slice(0, limit);
   const fmt = d => new Date(d + "T00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
@@ -146,7 +175,7 @@ function render() {
     <div class="card${j.gone ? " closed" : ""}">
       <h2><a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>${isNew(j) ? '<span class="new">NEW</span>' : ""}${j.gone ? `<span class="gone">no longer listed</span>` : ""}</h2>
       <div class="meta">${esc(j.company)} · ${esc(j.location)}${j.exp ? " · " + esc(j.exp) : ""} · ${esc(j.source)}</div>
-      <div class="chips">${j.skills.map(s => `<span class="chip">${esc(s)}</span>`).join("")}${j.why ? `<span class="chip">not a match: ${esc(whyText(j))}</span>` : ""}</div>
+      <div class="chips">${j.skills.map(s => `<span class="chip">${esc(s)}</span>`).join("")}${isRemote(j) ? '<span class="chip">WFH / remote</span>' : ""}${j.why ? `<span class="chip">not a match: ${esc(whyText(j))}</span>` : ""}</div>
       <div class="act" data-id="${esc(j.id)}">
         ${["saved", "applied", "hidden"].map(a => `<button data-act="${a}" class="${status(j) === a ? "on" : ""}">${a === "hidden" ? "Hide" : a[0].toUpperCase() + a.slice(1)}</button>`).join("")}
       </div>
@@ -159,6 +188,7 @@ document.addEventListener("click", e => {
   if (b.id === "run") { runNow(); return; }
   if (b.id === "forget") { clearToken(); $("runmsg").textContent = "Token removed from this browser."; return; }
   if (b.dataset.tab) { tab = b.dataset.tab; limit = 200; }
+  else if (b.dataset.f) { const [g, v] = b.dataset.f.split(":"); F[g] = v; limit = 200; }
   else if (b.dataset.more) limit += 200;
   else if (b.id === "newonly") { newOnly = !newOnly; limit = 200; }
   else if (b.dataset.act) {
