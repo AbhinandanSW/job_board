@@ -47,11 +47,13 @@ title_exclude:
   - 'in test|\bsdet\b|\bqa\b|quality'
 
 # Skills are matched against title + description (or the skill tags on boards with no description).
+# A job is listed under "For you" if it has the right title AND mentions at least ONE of these skills.
 skills: [react, reactjs, typescript, javascript, next.js, nextjs, redux, zustand, tanstack, react query,
-         html, css, graphql, websocket, jest, testing library, cypress, playwright, node, nodejs, mongodb, sql, python]
-min_skill_matches: 1          # must_have_any_skill below already keeps the role on your stack
-# A job must mention at least one of these (drops roles outside your core stack).
-must_have_any_skill: [react, reactjs, next.js, nextjs, redux, zustand, tanstack, react query, javascript, typescript]
+         angular, vue, svelte, tailwind, sass, webpack, vite, html, css, graphql, websocket, jest,
+         testing library, cypress, playwright, node, nodejs, express, mongodb, sql, python]
+min_skill_matches: 1          # raise to 2 for stricter matching
+# Optional extra rule: the job must mention one of these. Empty = any skill above is enough.
+must_have_any_skill: []
 
 # Your experience band. A job passes if its required years overlap min..max.
 experience:
@@ -59,13 +61,14 @@ experience:
   max: 5
   include_unspecified: true   # keep jobs that don't state years (shown as —)
 
-# any = openings from anywhere in the world (India and abroad); filter = only the locations below
+# any = openings from anywhere in the world (India and abroad, WFH and office); the dashboard has filters for it.
+# filter = only the locations below
 location_mode: any
 locations: [india, gurgaon, gurugram, delhi, noida]
 remote_ok: true
 
 new_days: 3                   # mark jobs first seen in the last N days
-store_others: true            # also keep every fetched job that did NOT match, with the reason (dashboard 'Others' tab)
+store_others: true            # also keep every fetched job that did NOT match, with the reason (dashboard 'General' tab)
 others_max: 1500              # cap on the Others list (near-misses are kept first)
 retention_days: 30            # keep a job this long after it stops being listed (shown as 'no longer listed')
 
