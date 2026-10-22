@@ -611,6 +611,7 @@ def update_others(others, rejected, matches, ok, today):
         fresh[j["id"]] = dict(
             id=j["id"], title=j["title"], company=j["company"], location=j["location"],
             url=j["url"], exp=j.get("exp_label", ""), why=why, day=day, source=j["id"].split(":")[0],
+            **({"remote": True} if j.get("remote") else {}),
         )
     for jid, rec in others.items():  # feeds that were not fetched this run keep their old rows
         if jid not in fresh and jid not in matches and scope(jid) not in ok and _key(rec) not in match_keys:
@@ -655,6 +656,7 @@ def main(today=None):
             id=j["id"], title=j["title"], company=j["company"], location=j["location"],
             url=j["url"], exp=j.get("exp_label", ""), skills=j["skills"],
             day=day, first_seen=first, source=j["id"].split(":")[0],
+            **({"remote": True} if j.get("remote") else {}),
         )
         if old and old.get("notified"):
             jobs[j["id"]]["notified"] = True
