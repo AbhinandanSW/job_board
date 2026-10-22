@@ -22,6 +22,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CFG = yaml.safe_load((HERE / "config.yml").read_text())
 STORE_PATH = ROOT / "docs" / "jobs.json"
+OTHERS_PATH = ROOT / "docs" / "others.json"
 APIFY = CFG.get("apify") or {}
 
 SESSION = requests.Session()
@@ -318,41 +319,61 @@ def matched_skills(job):
     return [s for s, rx in SKILLS.items() if rx.search(text)]
 
 
-def filter_jobs(jobs, label=""):
-    out, seen_ids, drops = [], set(), Counter()
+def filter_jobs(jobs, label="", rejected=None):
+    out, seen_ids, drops, examples = [], set(), Counter(), {}
+
+    def drop(reason, j):
+        drops[reason] += 1
+        if rejected is not None and reason != "duplicate":
+            rejected.append((j, reason))  # feeds the dashboard's Others tab
+        if reason not in ("duplicate", "title", "location"):  # keep a few examples to help tune filters
+            ex = examples.setdefault(reason, [])
+            if len(ex) < 3:
+                tail = f" [{j['exp_label']}]" if reason == "experience" and j.get("exp_label") else ""
+                ex.append(f"{j['title']} @ {j['company']}{tail}")
+
     for j in jobs:
         if j["id"] in seen_ids:
-            drops["duplicate"] += 1
-        elif not title_ok(j["title"]):
-            drops["title"] += 1
-        elif not location_ok(j):
-            drops["location"] += 1
-        elif not experience_ok(j):
-            drops["experience"] += 1
-        else:
-            skills = matched_skills(j)
-            if MUST and not MUST.intersection(x.lower() for x in skills):
-                drops["no core skill (react etc.)"] += 1
-            elif len(skills) < j.get("min_skills", CFG.get("min_skill_matches", 1)):
-                drops["too few skills"] += 1
-            else:
-                seen_ids.add(j["id"])
-                j["skills"] = skills
-                out.append(j)
+            drop("duplicate", j)
+            continue
+        if not title_ok(j["title"]):
+            drop("title", j)
+            continue
+        if not location_ok(j):
+            drop("location", j)
+            continue
+        if not experience_ok(j):
+            drop("experience", j)
+            continue
+        skills = matched_skills(j)
+        if MUST and not MUST.intersection(x.lower() for x in skills):
+            drop("no core skill (react etc.)", j)
+            continue
+        if len(skills) < j.get("min_skills", CFG.get("min_skill_matches", 1)):
+            drop("too few skills", j)
+            continue
+        seen_ids.add(j["id"])
+        j["skills"] = skills
+        out.append(j)
     if label:
         why = ", ".join(f"{k} {v}" for k, v in drops.most_common())
         report(f"{label}: {len(jobs)} fetched, {len(out)} kept" + (f" (dropped: {why})" if why else ""))
+        for reason, ex in examples.items():
+            report(f"  {label}, dropped by {reason}, e.g. " + "; ".join(ex))
     return out
+
+
+def _key(j):
+    n = lambda x: re.sub(r"\W+", "", (x or "").lower())
+    return (n(j["company"]), n(j["title"]), n(j["location"]))
 
 
 def dedupe(jobs):
     """Drop the same role listed on several sources (first one wins)."""
-    norm = lambda x: re.sub(r"\W+", "", (x or "").lower())
     seen, out = set(), []
     for j in jobs:
-        key = (norm(j["company"]), norm(j["title"]), norm(j["location"]))
-        if key not in seen:
-            seen.add(key)
+        if _key(j) not in seen:
+            seen.add(_key(j))
             out.append(j)
     return out
 
@@ -440,7 +461,7 @@ def map_item(item, m):
     )
 
 
-def apify_jobs(today, store):
+def apify_jobs(today, store, rejected=None):
     """Run the Apify Actors that are due. Returns (fresh matching jobs, feeds fetched).
 
     Each Actor has its own schedule (`min_interval_days`, default from the apify section), so cheap
@@ -495,7 +516,7 @@ def apify_jobs(today, store):
                 warn(f"Apify {key}: no rows for '{site}' (blocked, or nothing matched)")
         if not items:
             warn(f"Apify {key}: returned 0 rows (blocked, or nothing matched the search)")
-    return (filter_jobs(raw, "Apify") if raw else []), ok
+    return (filter_jobs(raw, "Apify", rejected) if raw else []), ok
 
 
 # ----------------------------- store ---------------------------------------
@@ -525,14 +546,103 @@ def save_store(store):
     return True
 
 
+def send_digest(new_jobs, today):
+    """Send new jobs to a Telegram group/channel as a digest. Returns True if sent."""
+    cfg = (CFG.get("notify") or {}).get("telegram") or {}
+    if not cfg.get("enabled"):
+        return False
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        report("Notifications: skipped (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets missing)")
+        return False
+
+    cap = cfg.get("max_jobs", 20)
+    ranked = sorted(new_jobs, key=lambda j: (len(j["skills"]), j["day"]), reverse=True)
+    shown, more = ranked[:cap], max(0, len(ranked) - cap)
+    esc = lambda x: html.escape(str(x or ""), quote=False)
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    dash = f"https://{repo.split('/')[0].lower()}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
+
+    head = f"🆕 <b>{len(ranked)} new job{'s' if len(ranked) != 1 else ''}</b> · {today:%a %d %b}\n"
+    blocks = []
+    for i, j in enumerate(shown, 1):
+        meta = " · ".join(x for x in [esc(j["company"]), esc(j["location"]), esc(j.get("exp")), esc(j["source"])] if x)
+        blocks.append(f'{i}. <a href="{html.escape(j["url"], quote=True)}">{esc(j["title"])}</a>\n    {meta}')
+    tail = (f"\n+{more} more on the dashboard" if more else "") + (f'\n<a href="{dash}">Open dashboard</a>' if dash else "")
+
+    messages, cur = [], head
+    for b in blocks:  # Telegram caps a message at 4096 characters
+        if len(cur) + len(b) + 2 > 3800:
+            messages.append(cur)
+            cur = ""
+        cur += "\n" + b + "\n"
+    messages.append(cur + tail)
+
+    for text in messages:
+        r = SESSION.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=30,
+        )
+        if not r.ok:  # never print the request URL: it contains the bot token
+            warn(f"Telegram send failed: HTTP {r.status_code} {r.text[:200]}")
+            return False
+        time.sleep(1)
+    report(f"Notifications: sent {len(shown)} of {len(ranked)} new jobs to Telegram")
+    return True
+
+
+def load_others():
+    if OTHERS_PATH.exists():
+        return {j["id"]: j for j in json.loads(OTHERS_PATH.read_text()).get("jobs", [])}
+    return {}
+
+
+def update_others(others, rejected, matches, ok, today):
+    """Jobs we fetched that did NOT pass your filters, with the reason (shown in the Others tab)."""
+    match_keys = {_key(j) for j in matches.values()}
+    fresh = {}
+    for j, why in rejected:
+        if j["id"] in matches or _key(j) in match_keys:
+            continue
+        old = others.get(j["id"])
+        posted = to_date(j.get("posted"))
+        day = old["day"] if old else (posted if posted and posted <= today else today).isoformat()
+        fresh[j["id"]] = dict(
+            id=j["id"], title=j["title"], company=j["company"], location=j["location"],
+            url=j["url"], exp=j.get("exp_label", ""), why=why, day=day, source=j["id"].split(":")[0],
+        )
+    for jid, rec in others.items():  # feeds that were not fetched this run keep their old rows
+        if jid not in fresh and jid not in matches and scope(jid) not in ok and _key(rec) not in match_keys:
+            fresh[jid] = rec
+    recs = sorted(fresh.values(), key=lambda r: r["day"], reverse=True)
+    recs = sorted(recs, key=lambda r: r["why"] == "title")  # near-misses (passed the title filter) survive the cap
+    recs = dedupe(recs)[: CFG.get("others_max", 1500)]
+    return sorted(recs, key=lambda r: r["day"], reverse=True)
+
+
+def save_others(recs):
+    old = json.loads(OTHERS_PATH.read_text()).get("jobs") if OTHERS_PATH.exists() else None
+    if old == recs:
+        return
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    dump = lambda o: json.dumps(o, ensure_ascii=False, separators=(",", ":"))
+    OTHERS_PATH.parent.mkdir(exist_ok=True)
+    OTHERS_PATH.write_text(
+        dump({"updated": stamp})[:-1] + ',"jobs":[\n' + ",\n".join(dump(r) for r in recs) + "\n]}\n"
+    )
+
+
 def main(today=None):
     today = today or dt.datetime.now(dt.timezone.utc).date()
     store = load_store()
     jobs = store["jobs"]
+    was_empty = not jobs
 
+    rejected = []
     free, ok = collect()
-    apify_fresh, apify_ok = apify_jobs(today, store)
-    fresh = dedupe(filter_jobs(free, "Free feeds") + apify_fresh)
+    apify_fresh, apify_ok = apify_jobs(today, store, rejected)
+    fresh = dedupe(filter_jobs(free, "Free feeds", rejected) + apify_fresh)
     ok |= apify_ok
 
     seen_now = set()
@@ -546,7 +656,14 @@ def main(today=None):
             url=j["url"], exp=j.get("exp_label", ""), skills=j["skills"],
             day=day, first_seen=first, source=j["id"].split(":")[0],
         )
+        if old and old.get("notified"):
+            jobs[j["id"]]["notified"] = True
         seen_now.add(j["id"])
+
+    # A job that used to match but no longer passes your filters moves to the Others tab.
+    for j, _ in rejected:
+        if j["id"] in jobs and j["id"] not in seen_now:
+            del jobs[j["id"]]
 
     # Jobs missing from a feed that WAS fetched successfully are marked "gone" (kept for a while).
     keep_days = CFG.get("retention_days", 30)
@@ -561,7 +678,25 @@ def main(today=None):
     # Same role on several sources: keep one, preferring jobs that are still listed.
     ordered = sorted(jobs.values(), key=lambda r: "gone" in r)
     store["jobs"] = {j["id"]: j for j in dedupe(ordered)}
+
+    # Alerts: each job is announced once. The very first run only records a baseline (no flood).
+    notify_on = ((CFG.get("notify") or {}).get("telegram") or {}).get("enabled")
+    pending = [j for j in store["jobs"].values() if "gone" not in j and not j.get("notified")]
+    if notify_on and pending:
+        if was_empty:
+            for j in pending:
+                j["notified"] = True
+            report(f"Notifications: first run, {len(pending)} jobs recorded without sending")
+        else:
+            recent = [j for j in pending if (today - dt.date.fromisoformat(j["first_seen"])).days <= 2]
+            if not recent or send_digest(recent, today):
+                for j in pending:  # older leftovers are marked silently so they never flood later
+                    j["notified"] = True
     save_store(store)
+    if CFG.get("store_others", True):
+        recs = update_others(load_others(), rejected, store["jobs"], ok, today)
+        save_others(recs)
+        report(f"Others tab: {len(recs)} fetched jobs that did not match your filters")
     n_gone = sum(1 for j in store["jobs"].values() if "gone" in j)
     print(f"{len(store['jobs']) - n_gone} listed, {n_gone} no longer listed")
 
