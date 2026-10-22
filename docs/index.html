@@ -53,8 +53,8 @@ button{cursor:pointer}button.on{border-color:var(--acc);color:var(--acc)}
     <a href="https://www.arbeitnow.com" target="_blank" rel="noopener">Arbeitnow</a>, and LinkedIn, Naukri, Glassdoor, Hirist, Instahyre and Foundit via Apify.</div>
 </main>
 <script>
-const KEY = "jobstatus:v1", TABS = ["open", "saved", "applied", "hidden"];
-let st = {}, data = [], tab = "open", newOnly = false;
+const KEY = "jobstatus:v1", TABS = ["open", "others", "saved", "applied", "hidden"];
+let st = {}, data = [], tab = "open", newOnly = false, limit = 200;
 try { st = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
 const persist = () => { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch (e) {} };
 const $ = id => document.getElementById(id);
@@ -63,13 +63,15 @@ const status = j => st[j.id] || "open";
 const isNew = j => (Date.now() - new Date(j.first_seen)) / 864e5 <= 3;
 
 function load() {
+  const others = fetch("others.json", { cache: "no-store" }).then(r => (r.ok ? r.json() : {})).catch(() => ({}));
   return fetch("jobs.json", { cache: "no-store" })
     .then(r => r.json())
-    .then(d => {
-      data = d.jobs;
+    .then(async d => {
+      const o = (await others).jobs || [];
+      data = d.jobs.map(j => ({ ...j, m: true })).concat(o.map(j => ({ ...j, m: false, skills: [] })));
       const links = d.links || [];
       $("links").innerHTML = links.length ? "Search yourself: " + links.map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.name)}</a>`).join(" · ") : "";
-      $("upd").textContent = `${data.length} matches · updated ${d.updated}`;
+      $("upd").textContent = `${d.jobs.length} matches · ${o.length} others · updated ${d.updated}`;
       $("src").length = 1;
       [...new Set(data.map(j => j.source))].sort().forEach(s => $("src").add(new Option(s, s)));
       render();
@@ -122,14 +124,20 @@ async function runNow() {
   $("run").disabled = false;
 }
 
+const WHY = { title: "title not on your list", location: "location", "no core skill (react etc.)": "no React/core skill", "too few skills": "too few skills" };
+const whyText = j => (j.why === "experience" ? "experience" + (j.exp ? " " + j.exp : "") : WHY[j.why] || j.why);
+const label = t => (t === "open" ? "Matches" : t[0].toUpperCase() + t.slice(1));
+const inTab = (j, t) => (t === "open" ? j.m && status(j) === "open" : t === "others" ? !j.m && status(j) === "open" : status(j) === t);
+
 function render() {
   $("tabs").innerHTML = TABS.map(t =>
-    `<button data-tab="${t}" class="${t === tab ? "on" : ""}">${t[0].toUpperCase() + t.slice(1)} (${data.filter(j => status(j) === t).length})</button>`).join("");
+    `<button data-tab="${t}" class="${t === tab ? "on" : ""}">${label(t)} (${data.filter(j => inTab(j, t)).length})</button>`).join("");
   $("newonly").className = newOnly ? "on" : "";
   const q = $("q").value.toLowerCase(), src = $("src").value;
-  const rows = data.filter(j => status(j) === tab && (!src || j.source === src) && (!newOnly || isNew(j)) &&
+  const all = data.filter(j => inTab(j, tab) && (!src || j.source === src) && (!newOnly || isNew(j)) &&
     (!q || [j.title, j.company, j.location, ...j.skills].join(" ").toLowerCase().includes(q)));
-  rows.sort((a, b) => (b.day || "").localeCompare(a.day || ""));
+  all.sort((a, b) => (b.day || "").localeCompare(a.day || ""));
+  const rows = all.slice(0, limit);
   const fmt = d => new Date(d + "T00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
   let last = "";
   $("list").innerHTML = rows.length ? rows.map(j => {
@@ -138,20 +146,21 @@ function render() {
     <div class="card${j.gone ? " closed" : ""}">
       <h2><a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.title)}</a>${isNew(j) ? '<span class="new">NEW</span>' : ""}${j.gone ? `<span class="gone">no longer listed</span>` : ""}</h2>
       <div class="meta">${esc(j.company)} · ${esc(j.location)}${j.exp ? " · " + esc(j.exp) : ""} · ${esc(j.source)}</div>
-      <div class="chips">${j.skills.map(s => `<span class="chip">${esc(s)}</span>`).join("")}</div>
+      <div class="chips">${j.skills.map(s => `<span class="chip">${esc(s)}</span>`).join("")}${j.why ? `<span class="chip">not a match: ${esc(whyText(j))}</span>` : ""}</div>
       <div class="act" data-id="${esc(j.id)}">
         ${["saved", "applied", "hidden"].map(a => `<button data-act="${a}" class="${status(j) === a ? "on" : ""}">${a === "hidden" ? "Hide" : a[0].toUpperCase() + a.slice(1)}</button>`).join("")}
       </div>
     </div>`;
-  }).join("") : '<div class="empty">Nothing here.</div>';
+  }).join("") + (all.length > limit ? `<div style="text-align:center;margin:16px"><button data-more="1">Show more (${all.length - limit} left)</button></div>` : "") : '<div class="empty">Nothing here.</div>';
 }
 
 document.addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.id === "run") { runNow(); return; }
   if (b.id === "forget") { clearToken(); $("runmsg").textContent = "Token removed from this browser."; return; }
-  if (b.dataset.tab) tab = b.dataset.tab;
-  else if (b.id === "newonly") newOnly = !newOnly;
+  if (b.dataset.tab) { tab = b.dataset.tab; limit = 200; }
+  else if (b.dataset.more) limit += 200;
+  else if (b.id === "newonly") { newOnly = !newOnly; limit = 200; }
   else if (b.dataset.act) {
     const id = b.parentElement.dataset.id;
     if (st[id] === b.dataset.act) delete st[id]; else st[id] = b.dataset.act;
@@ -159,8 +168,8 @@ document.addEventListener("click", e => {
   } else return;
   render();
 });
-$("q").addEventListener("input", render);
-$("src").addEventListener("change", render);
+$("q").addEventListener("input", () => { limit = 200; render(); });
+$("src").addEventListener("change", () => { limit = 200; render(); });
 </script>
 </body>
 </html>
