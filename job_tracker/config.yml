@@ -18,11 +18,14 @@ title_include:
   - 'software (developer|engineer)'
   - '\bsde\b'
   - 'senior software engineer'
-  - 'web developer'
+  - 'web (developer|engineer|application)'
   - 'front[\s-]?end'
   - 'full[\s-]?stack'
-  - 'ui engineer'
-  - '\breact\b'
+  - '\bmern\b'
+  - 'ui[\s/-]*(ux[\s/-]*)?(developer|engineer)'
+  - '(java)?script (developer|engineer)|\bjs (developer|engineer)'
+  - '\breact\b|react[\s.-]?js'
+  - 'next[\s.]?js'
 title_exclude:
   - '\bintern(ship)?\b'
   - 'trainee'
@@ -44,11 +47,11 @@ title_exclude:
   - 'in test|\bsdet\b|\bqa\b|quality'
 
 # Skills are matched against title + description (or the skill tags on boards with no description).
-skills: [react, typescript, javascript, next.js, redux, zustand, tanstack, react query,
-         graphql, websocket, jest, testing library, cypress, playwright, node, mongodb, sql, python]
-min_skill_matches: 2
+skills: [react, reactjs, typescript, javascript, next.js, nextjs, redux, zustand, tanstack, react query,
+         html, css, graphql, websocket, jest, testing library, cypress, playwright, node, nodejs, mongodb, sql, python]
+min_skill_matches: 1          # must_have_any_skill below already keeps the role on your stack
 # A job must mention at least one of these (drops roles outside your core stack).
-must_have_any_skill: [react, next.js, redux, zustand, tanstack, react query, javascript, html, css, node.js, typescript]
+must_have_any_skill: [react, reactjs, next.js, nextjs, redux, zustand, tanstack, react query, javascript, typescript]
 
 # Your experience band. A job passes if its required years overlap min..max.
 experience:
@@ -62,20 +65,24 @@ locations: [india, gurgaon, gurugram, delhi, noida]
 remote_ok: true
 
 new_days: 3                   # mark jobs first seen in the last N days
+store_others: true            # also keep every fetched job that did NOT match, with the reason (dashboard 'Others' tab)
+others_max: 1500              # cap on the Others list (near-misses are kept first)
 retention_days: 30            # keep a job this long after it stops being listed (shown as 'no longer listed')
 
 # ---- 2. FREE SOURCES (public job-board APIs, no keys needed) ---------------
 # Slug = the part after boards.greenhouse.io/ , jobs.lever.co/ , jobs.ashbyhq.com/
 # Wrong slugs just log a warning. Add the companies YOU care about (India and abroad).
 sources:
-  greenhouse: [stripe, airbnb, databricks, cloudflare, twilio]
-  lever: [cred, meesho]
-  ashby: [notion]
+  # Slugs below are best guesses; a wrong one just logs a warning and is skipped.
+  greenhouse: [stripe, airbnb, databricks, cloudflare, twilio, gitlab, figma, discord, coinbase, reddit,
+               instacart, lyft, pinterest, dropbox, mongodb, okta, datadog, asana, webflow, gusto, brex]
+  lever: [cred, meesho, palantir, spotify]
+  ashby: [notion, linear, ramp, openai, deel]
   remoteok: true                                   # remote, worldwide
   himalayas: [react, frontend developer, full stack developer]   # remote, worldwide (needs a link back, see dashboard footer)
   jobicy: [react, frontend, full stack]            # remote jobs by region
   arbeitnow: true                                  # Germany / EU tech jobs, many with relocation support
-  # remotive_queries: [react, frontend]            # defaults to search_terms (max 3/day)
+  remotive_queries: [react, frontend, full stack]  # short words work best here (max ~3 requests/day)
 
 # ---- 3. APIFY (OPTIONAL; needs the APIFY_TOKEN secret) ----------------------
 # Each Actor is a separate run. Prices are per result; the openclaw Actor also uses residential
@@ -204,6 +211,14 @@ apify:
       map:
         <<: *foundit_map
         source_label: foundit-gulf
+
+# ---- 3b. ALERTS (optional): new jobs are sent to a Telegram group/channel -------------------
+# Needs two repo secrets: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (see README). Each job is sent once,
+# as one digest message. The first run only records a baseline so your group isn't flooded.
+notify:
+  telegram:
+    enabled: true             # no secrets = skipped automatically
+    max_jobs: 20              # jobs listed per digest; the rest are summarised as "+N more"
 
 # ---- 4. SEARCH SHORTCUTS (shown at the bottom of the dashboard; never scraped) -----------------
 # Sites that are not fetched automatically. Replace with your own saved searches:
