@@ -549,21 +549,60 @@ def save_store(store):
     return True
 
 
-CHANNELS = ("telegram", "discord")
+# ----------------------------- alerts --------------------------------------
+ROLE_NAMES = {"frontend": "Frontend", "fullstack": "Full stack", "backend": "Backend", "other": "Other"}
+ROLE_RE = {  # checked in this order; the first title match wins
+    "fullstack": re.compile(r"full[\s-]?stack|\bmern\b|\bmean\b", re.I),
+    "frontend": re.compile(r"front[\s-]?end|react|next[\s.]?js|\bui\b|ui/ux|angular|\bvue|svelte|web (developer|engineer)|javascript|\bjs\b", re.I),
+    "backend": re.compile(r"back[\s-]?end|\bjava\b|python|golang|\bnode|\.net|\bphp\b|ruby|\bspring\b|django", re.I),
+}
+FRONT_SKILLS = {"react", "reactjs", "next.js", "nextjs", "redux", "zustand", "tanstack", "react query",
+                "angular", "vue", "svelte", "tailwind", "sass", "webpack", "vite", "html", "css"}
+BACK_SKILLS = {"node", "nodejs", "express", "python", "java", "spring", "django", "flask", "golang", "sql",
+               "mongodb", "postgres", "mysql", "redis", "kafka", "microservices"}
 
 
-def notified_set(rec):
+def role_of(j):
+    """frontend / fullstack / backend / other. The title decides; generic titles ("Software Engineer") use skills."""
+    for r, rx in ROLE_RE.items():
+        if rx.search(j["title"]):
+            return r
+    sk = {x.lower() for x in j.get("skills", [])}
+    f, b = bool(sk & FRONT_SKILLS), bool(sk & BACK_SKILLS)
+    return "fullstack" if f and b else "frontend" if f else "backend" if b else "other"
+
+
+def channels():
+    """Alert channels from config: 'telegram', 'discord' (one webhook) or 'discord:<role>' (a webhook per role)."""
+    n = CFG.get("notify") or {}
+    out = ["telegram"] if (n.get("telegram") or {}).get("enabled") else []
+    d = n.get("discord") or {}
+    if d.get("enabled"):
+        out += [f"discord:{r}" for r in (d.get("channels") or {})] or ["discord"]
+    return out
+
+
+def webhook_env(ch):
+    """Name of the secret/env var that holds this Discord channel's webhook URL."""
+    d = (CFG.get("notify") or {}).get("discord") or {}
+    return (d.get("channels") or {}).get(ch.split(":", 1)[1]) if ":" in ch else "DISCORD_WEBHOOK_URL"
+
+
+def is_done(rec, ch):
     n = rec.get("notified")
-    return set(CHANNELS) if n is True else set(n or [])  # True = old format (all channels)
+    return n is True or ch in (n or [])  # True = old format: announced everywhere
+
+
+def mark_done(rec, ch):
+    n = rec.get("notified")
+    if n is not True:
+        rec["notified"] = sorted(set(n or []) | {ch})
 
 
 def channel_ready(ch):
-    cfg = (CFG.get("notify") or {}).get(ch) or {}
-    if not cfg.get("enabled"):
-        return False
-    need = {"telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"), "discord": ("DISCORD_WEBHOOK_URL",)}[ch]
+    need = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID") if ch == "telegram" else (webhook_env(ch),)
     if not all(os.environ.get(k) for k in need):
-        report(f"Notifications ({ch}): skipped (secret {' / '.join(need)} missing)")
+        report(f"Notifications ({ch}): skipped (secret {' / '.join(str(k) for k in need)} missing)")
         return False
     return True
 
@@ -589,15 +628,17 @@ def _post_json(url, payload):
 
 def send_digest(ch, new_jobs, today):
     """Send new jobs to one channel as a digest. Returns True if everything was sent."""
-    cfg = (CFG.get("notify") or {}).get(ch) or {}
+    kind = ch.split(":")[0]
+    cfg = (CFG.get("notify") or {}).get(kind) or {}
     cap = cfg.get("max_jobs", 20)
     ranked = sorted(new_jobs, key=lambda j: (len(j["skills"]), j["day"]), reverse=True)
     shown, more = ranked[:cap], max(0, len(ranked) - cap)
     dash = dashboard_url()
     plural = "s" if len(ranked) != 1 else ""
+    role = ROLE_NAMES.get(ch.split(":")[1], "") + " " if ":" in ch else ""
     meta = lambda j: " · ".join(x for x in [j["company"], j["location"], j.get("exp"), j["source"]] if x)
 
-    if ch == "telegram":
+    if kind == "telegram":
         esc = lambda x: html.escape(str(x or ""), quote=False)
         head = f"🆕 <b>{len(ranked)} new job{plural}</b> · {today:%a %d %b}\n"
         blocks = [
@@ -611,11 +652,11 @@ def send_digest(ch, new_jobs, today):
                            "disable_web_page_preview": True}
     else:  # discord webhook
         md = lambda x: re.sub(r"([\\*_`~|>\[\]])", r"\\\1", str(x or ""))  # escape markdown characters
-        head = f"🆕 **{len(ranked)} new job{plural}** · {today:%a %d %b}\n"
+        head = f"🆕 **{len(ranked)} new {role}job{plural}** · {today:%a %d %b}\n"
         blocks = [f"{i}. [{md(j['title'])}](<{j['url']}>)\n    {md(meta(j))}" for i, j in enumerate(shown, 1)]
         tail = (f"\n+{more} more on the dashboard" if more else "") + (f"\n[Open dashboard](<{dash}>)" if dash else "")
         limit = 1800  # Discord caps a message at 2000 characters
-        url = os.environ["DISCORD_WEBHOOK_URL"]
+        url = os.environ[webhook_env(ch)]
         mk = lambda text: {"content": text, "username": "Job Tracker", "flags": 4,  # 4 = no link embeds
                            "allowed_mentions": {"parse": []}}
 
@@ -808,12 +849,14 @@ def main(today=None):
     ordered = sorted(jobs.values(), key=lambda r: "gone" in r)
     store["jobs"] = {j["id"]: j for j in dedupe(ordered)}
 
-    # Alerts: each job is announced once PER CHANNEL, so one channel failing never repeats the other.
-    # The very first run only records a baseline (no flood).
-    for ch in CHANNELS:
+    # Alerts: each job is announced once PER CHANNEL (and role channels only get their own kind of job),
+    # so one channel failing never repeats another. The very first run only records a baseline (no flood).
+    for ch in channels():
         if not channel_ready(ch):
             continue
-        pending = [j for j in store["jobs"].values() if "gone" not in j and ch not in notified_set(j)]
+        role = ch.split(":")[1] if ch.startswith("discord:") else None
+        pending = [j for j in store["jobs"].values()
+                   if "gone" not in j and not is_done(j, ch) and (role is None or role_of(j) == role)]
         if not pending:
             continue
         if was_empty:
@@ -824,7 +867,7 @@ def main(today=None):
             ok_sent = not recent or send_digest(ch, recent, today)
         if ok_sent:
             for j in pending:  # older leftovers are marked silently so they never flood later
-                j["notified"] = sorted(notified_set(j) | {ch})
+                mark_done(j, ch)
     dcfg = CFG.get("apply_drafts") or {}
     if dcfg.get("enabled"):
         prof = json.dumps(dcfg.get("profile") or {})
