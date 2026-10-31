@@ -24,6 +24,8 @@ title_include:
   - '\bmern\b'
   - 'ui[\s/-]*(ux[\s/-]*)?(developer|engineer)'
   - '(java)?script (developer|engineer)|\bjs (developer|engineer)'
+  - 'back[\s-]?end'
+  - '(java|python|golang|node(\.?js)?|\.net|php|ruby) (developer|engineer)'
   - '\breact\b|react[\s.-]?js'
   - 'next[\s.]?js'
 title_exclude:
@@ -39,7 +41,6 @@ title_exclude:
   - 'head of'
   - '\bvp\b'
   - 'architect'
-  - 'back[\s-]?end'
   - '\b(ios|android)\b'
   - 'devops|\bsre\b'
   - 'data (engineer|scientist)'
@@ -50,7 +51,8 @@ title_exclude:
 # A job is listed under "For you" if it has the right title AND mentions at least ONE of these skills.
 skills: [react, reactjs, typescript, javascript, next.js, nextjs, redux, zustand, tanstack, react query,
          angular, vue, svelte, tailwind, sass, webpack, vite, html, css, graphql, websocket, jest,
-         testing library, cypress, playwright, node, nodejs, express, mongodb, sql, python]
+         testing library, cypress, playwright, node, nodejs, express, mongodb, sql, python,
+         java, spring, django, flask, golang, postgres, mysql, redis, kafka, microservices, docker, aws]
 min_skill_matches: 1          # raise to 2 for stricter matching
 # Optional extra rule: the job must mention one of these. Empty = any skill above is enough.
 must_have_any_skill: []
@@ -223,8 +225,16 @@ notify:
     enabled: true             # no secrets = skipped automatically
     max_jobs: 20              # jobs listed per digest; the rest are summarised as "+N more"
   discord:
-    enabled: true             # needs the DISCORD_WEBHOOK_URL secret (never put the URL in this file)
-    max_jobs: 20
+    enabled: true
+    max_jobs: 100             # jobs listed per digest, per Discord channel; the rest are summarised as "+N more"
+    # One Discord webhook per channel. The value is the NAME of the GitHub secret that holds that channel's
+    # webhook URL (never put a URL in this file). Each job goes to the one channel that fits it best.
+    # Remove this whole `channels:` block to use a single webhook instead (secret DISCORD_WEBHOOK_URL).
+    channels:
+      frontend: DISCORD_WEBHOOK_FRONTEND
+      fullstack: DISCORD_WEBHOOK_FULLSTACK
+      backend: DISCORD_WEBHOOK_BACKEND
+      # other: DISCORD_WEBHOOK_OTHER   # optional: generic roles that are clearly neither (not announced otherwise)
 
 # ---- 3c. EMAIL DRAFTS (optional, OFF by default) ---------------------------------------------
 # When a job post contains a contact email (e.g. "send your resume to hr@company.com"), the tracker saves a
