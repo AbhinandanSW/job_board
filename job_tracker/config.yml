@@ -120,7 +120,7 @@ apify:
         company: [company]
         location: [location]
         url: [job_url, job_url_direct]
-        desc: [description, skills]
+        desc: [description, skills, emails]
         experience: [experience_range]
         remote: [is_remote]
     # --- Naukri, through an India residential IP (Naukri blocks datacenter IPs) ------------------
@@ -215,13 +215,54 @@ apify:
         <<: *foundit_map
         source_label: foundit-gulf
 
-# ---- 3b. ALERTS (optional): new jobs are sent to a Telegram group/channel -------------------
-# Needs two repo secrets: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (see README). Each job is sent once,
+# ---- 3b. ALERTS (optional): new jobs are sent to Telegram and/or Discord --------------------------------
+# Telegram needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID, Discord needs DISCORD_WEBHOOK_URL (repo secrets, see README). Each job is sent once per channel,
 # as one digest message. The first run only records a baseline so your group isn't flooded.
 notify:
   telegram:
     enabled: true             # no secrets = skipped automatically
     max_jobs: 20              # jobs listed per digest; the rest are summarised as "+N more"
+  discord:
+    enabled: true             # needs the DISCORD_WEBHOOK_URL secret (never put the URL in this file)
+    max_jobs: 20
+
+# ---- 3c. EMAIL DRAFTS (optional, OFF by default) ---------------------------------------------
+# When a job post contains a contact email (e.g. "send your resume to hr@company.com"), the tracker saves a
+# DRAFT in your Gmail for you to review and send. It NEVER sends anything. Emails are read at run time and
+# are not stored in the repo, the dashboard data or the logs. Needs two secrets: GMAIL_ADDRESS and
+# GMAIL_APP_PASSWORD (see README). Only jobs in "For you" are used. Placeholders: {recruiter} {title}
+# {company} {url} {skills} {name} {headline} {highlights} {links}
+apply_drafts:
+  enabled: false              # set to true after adding the secrets and editing the profile below
+  max_per_run: 10             # drafts created per run
+  max_age_days: 14            # ignore posts older than this
+  max_recipients: 2           # contact emails put in "To"
+  attach_reminder: true       # first line of each draft reminds you to attach your resume
+  subject: "Application for {title} - {name}"
+  profile:
+    name: Abhinandan Goyal
+    headline: "I'm a Software Development Engineer 2 with about 4 years of experience building React and TypeScript products"
+    highlights:
+      - "EDIT ME: one line about your strongest project (what you built and the result)"
+      - "EDIT ME: another line (scale, ownership or leading engineers)"
+    links:
+      - "LinkedIn: https://www.linkedin.com/in/abhinandangoyal"
+      - "GitHub: https://github.com/AbhinandanSW"
+  body: |
+    Hi {recruiter},
+
+    I came across the {title} opening at {company} and would like to apply.
+
+    {headline}. A few highlights:
+    {highlights}
+
+    My experience lines up with the role ({skills}). I'd be glad to share more or set up a quick call.
+
+    Job link: {url}
+    {links}
+
+    Thanks,
+    {name}
 
 # ---- 4. SEARCH SHORTCUTS (shown at the bottom of the dashboard; never scraped) -----------------
 # Sites that are not fetched automatically. Replace with your own saved searches:
