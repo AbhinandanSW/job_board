@@ -7,12 +7,14 @@ file: docs/jobs.json (the dashboard reads it directly).
 """
 import datetime as dt
 import html
+import imaplib
 import json
 import os
 import re
 import sys
 import time
 from collections import Counter
+from email.message import EmailMessage
 from pathlib import Path
 
 import requests
@@ -50,6 +52,7 @@ def get_json(url, **kw):
 
 def clean(text):
     text = html.unescape(text or "")
+    text = re.sub(r"""href=["']mailto:([^"'?>]+)[^"']*["']""", r" \1 ", text, flags=re.I)  # keep mailto addresses
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -546,50 +549,172 @@ def save_store(store):
     return True
 
 
-def send_digest(new_jobs, today):
-    """Send new jobs to a Telegram group/channel as a digest. Returns True if sent."""
-    cfg = (CFG.get("notify") or {}).get("telegram") or {}
+CHANNELS = ("telegram", "discord")
+
+
+def notified_set(rec):
+    n = rec.get("notified")
+    return set(CHANNELS) if n is True else set(n or [])  # True = old format (all channels)
+
+
+def channel_ready(ch):
+    cfg = (CFG.get("notify") or {}).get(ch) or {}
     if not cfg.get("enabled"):
         return False
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-    if not (token and chat):
-        report("Notifications: skipped (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets missing)")
+    need = {"telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"), "discord": ("DISCORD_WEBHOOK_URL",)}[ch]
+    if not all(os.environ.get(k) for k in need):
+        report(f"Notifications ({ch}): skipped (secret {' / '.join(need)} missing)")
         return False
+    return True
 
+
+def dashboard_url():
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    return f"https://{repo.split('/')[0].lower()}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
+
+
+def _post_json(url, payload):
+    """POST JSON; one retry on rate limit. Never logs the URL (it contains a secret)."""
+    for _ in range(2):
+        r = SESSION.post(url, json=payload, timeout=30)
+        if r.status_code == 429:
+            try:
+                time.sleep(min(float(r.json().get("retry_after", 2)), 10))
+            except Exception:
+                time.sleep(2)
+            continue
+        return r
+    return r
+
+
+def send_digest(ch, new_jobs, today):
+    """Send new jobs to one channel as a digest. Returns True if everything was sent."""
+    cfg = (CFG.get("notify") or {}).get(ch) or {}
     cap = cfg.get("max_jobs", 20)
     ranked = sorted(new_jobs, key=lambda j: (len(j["skills"]), j["day"]), reverse=True)
     shown, more = ranked[:cap], max(0, len(ranked) - cap)
-    esc = lambda x: html.escape(str(x or ""), quote=False)
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-    dash = f"https://{repo.split('/')[0].lower()}.github.io/{repo.split('/')[1]}/" if "/" in repo else ""
+    dash = dashboard_url()
+    plural = "s" if len(ranked) != 1 else ""
+    meta = lambda j: " · ".join(x for x in [j["company"], j["location"], j.get("exp"), j["source"]] if x)
 
-    head = f"🆕 <b>{len(ranked)} new job{'s' if len(ranked) != 1 else ''}</b> · {today:%a %d %b}\n"
-    blocks = []
-    for i, j in enumerate(shown, 1):
-        meta = " · ".join(x for x in [esc(j["company"]), esc(j["location"]), esc(j.get("exp")), esc(j["source"])] if x)
-        blocks.append(f'{i}. <a href="{html.escape(j["url"], quote=True)}">{esc(j["title"])}</a>\n    {meta}')
-    tail = (f"\n+{more} more on the dashboard" if more else "") + (f'\n<a href="{dash}">Open dashboard</a>' if dash else "")
+    if ch == "telegram":
+        esc = lambda x: html.escape(str(x or ""), quote=False)
+        head = f"🆕 <b>{len(ranked)} new job{plural}</b> · {today:%a %d %b}\n"
+        blocks = [
+            f'{i}. <a href="{html.escape(j["url"], quote=True)}">{esc(j["title"])}</a>\n    {esc(meta(j))}'
+            for i, j in enumerate(shown, 1)
+        ]
+        tail = (f"\n+{more} more on the dashboard" if more else "") + (f'\n<a href="{dash}">Open dashboard</a>' if dash else "")
+        limit = 3800  # Telegram caps a message at 4096 characters
+        url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
+        mk = lambda text: {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text, "parse_mode": "HTML",
+                           "disable_web_page_preview": True}
+    else:  # discord webhook
+        md = lambda x: re.sub(r"([\\*_`~|>\[\]])", r"\\\1", str(x or ""))  # escape markdown characters
+        head = f"🆕 **{len(ranked)} new job{plural}** · {today:%a %d %b}\n"
+        blocks = [f"{i}. [{md(j['title'])}](<{j['url']}>)\n    {md(meta(j))}" for i, j in enumerate(shown, 1)]
+        tail = (f"\n+{more} more on the dashboard" if more else "") + (f"\n[Open dashboard](<{dash}>)" if dash else "")
+        limit = 1800  # Discord caps a message at 2000 characters
+        url = os.environ["DISCORD_WEBHOOK_URL"]
+        mk = lambda text: {"content": text, "username": "Job Tracker", "flags": 4,  # 4 = no link embeds
+                           "allowed_mentions": {"parse": []}}
 
     messages, cur = [], head
-    for b in blocks:  # Telegram caps a message at 4096 characters
-        if len(cur) + len(b) + 2 > 3800:
+    for b in blocks:
+        if len(cur) + len(b) + 2 > limit:
             messages.append(cur)
             cur = ""
         cur += "\n" + b + "\n"
     messages.append(cur + tail)
 
-    for text in messages:
-        r = SESSION.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True},
-            timeout=30,
-        )
-        if not r.ok:  # never print the request URL: it contains the bot token
-            warn(f"Telegram send failed: HTTP {r.status_code} {r.text[:200]}")
-            return False
-        time.sleep(1)
-    report(f"Notifications: sent {len(shown)} of {len(ranked)} new jobs to Telegram")
+    try:
+        for text in messages:
+            r = _post_json(url, mk(text))
+            if not r.ok:  # never print the request URL: it contains a token
+                warn(f"{ch} send failed: HTTP {r.status_code} {r.text[:150]}")
+                return False
+            time.sleep(1)
+    except Exception as e:
+        warn(f"{ch} send failed: {type(e).__name__}")
+        return False
+    report(f"Notifications ({ch}): sent {len(shown)} of {len(ranked)} new jobs")
     return True
+
+
+# ----------------------------- email drafts --------------------------------
+# Contact emails are read from the job post text at run time and used ONLY to create a draft in your
+# own Gmail. They are never written to the repo, the dashboard data or the Actions log (the repo is public).
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+SKIP_LOCAL = re.compile(
+    r"^(no[-_.]?reply|do[-_.]?not[-_.]?reply|privacy|legal|abuse|webmaster|support|help|sales|marketing|press|"
+    r"media|billing|accounts?|security|compliance|unsubscribe|newsletter|admin|postmaster)$", re.I)
+SKIP_DOMAINS = {"example.com", "domain.com", "email.com", "yourcompany.com", "company.com"}
+IMAGE_TLDS = {"png", "jpg", "jpeg", "gif", "svg", "webp"}
+
+
+def extract_emails(text, limit=2):
+    t = re.sub(r"\s*[\[\(]\s*at\s*[\]\)]\s*", "@", text or "", flags=re.I)  # "hr [at] x [dot] com"
+    t = re.sub(r"\s*[\[\(]\s*dot\s*[\]\)]\s*", ".", t, flags=re.I)
+    out = []
+    for m in EMAIL_RE.findall(t):
+        e = m.strip(".").lower()
+        local, _, domain = e.partition("@")
+        if (SKIP_LOCAL.match(local) or domain in SKIP_DOMAINS or domain.rsplit(".", 1)[-1] in IMAGE_TLDS
+                or e in out):
+            continue
+        out.append(e)
+        if len(out) >= limit:
+            break
+    return out
+
+
+class _Safe(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def build_draft(j, to, cfg):
+    prof = cfg.get("profile") or {}
+    vals = _Safe(
+        recruiter="Hiring Team", title=j["title"], company=j["company"], url=j["url"],
+        skills=", ".join(j["skills"][:4]), name=prof.get("name", ""), headline=prof.get("headline", ""),
+        highlights="\n".join(f"- {h}" for h in prof.get("highlights", [])),
+        links="\n".join(prof.get("links", [])),
+    )
+    msg = EmailMessage()
+    msg["To"] = ", ".join(to)
+    msg["Subject"] = (cfg.get("subject") or "Application for {title}").format_map(vals)
+    body = (cfg.get("body") or "").format_map(vals).strip() + "\n"
+    if cfg.get("attach_reminder", True):
+        body = "[REVIEW FIRST: attach your resume, check the details, then delete this line]\n\n" + body
+    msg.set_content(body)
+    return msg
+
+
+def create_drafts(items, cfg):
+    """items: [(job, [emails])]. Saves each as a Gmail DRAFT (never sends). Returns the set of job ids."""
+    addr, pw = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
+    if not (addr and pw):
+        report("Email drafts: skipped (GMAIL_ADDRESS / GMAIL_APP_PASSWORD secrets missing)")
+        return set()
+    done = set()
+    try:
+        M = imaplib.IMAP4_SSL("imap.gmail.com")
+        M.login(addr, pw)
+        folder = "[Gmail]/Drafts"
+        for line in (M.list()[1] or []):  # the Drafts folder name depends on the account language
+            line = line.decode(errors="ignore") if isinstance(line, bytes) else str(line)
+            if "\\Drafts" in line:
+                folder = line.rsplit(' "/" ', 1)[-1].strip().strip('"')
+        for j, to in items:
+            msg = build_draft(j, to, cfg)
+            msg["From"] = addr
+            M.append(f'"{folder}"', "(\\Draft)", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+            done.add(j["id"])
+        M.logout()
+    except Exception as e:  # never print credentials or addresses
+        warn(f"Email drafts failed after {len(done)} draft(s): {type(e).__name__}")
+    return done
 
 
 def load_others():
@@ -659,7 +784,9 @@ def main(today=None):
             **({"remote": True} if j.get("remote") else {}),
         )
         if old and old.get("notified"):
-            jobs[j["id"]]["notified"] = True
+            jobs[j["id"]]["notified"] = old["notified"]
+        if old and old.get("drafted"):
+            jobs[j["id"]]["drafted"] = True
         seen_now.add(j["id"])
 
     # A job that used to match but no longer passes your filters moves to the Others tab.
@@ -681,19 +808,43 @@ def main(today=None):
     ordered = sorted(jobs.values(), key=lambda r: "gone" in r)
     store["jobs"] = {j["id"]: j for j in dedupe(ordered)}
 
-    # Alerts: each job is announced once. The very first run only records a baseline (no flood).
-    notify_on = ((CFG.get("notify") or {}).get("telegram") or {}).get("enabled")
-    pending = [j for j in store["jobs"].values() if "gone" not in j and not j.get("notified")]
-    if notify_on and pending:
+    # Alerts: each job is announced once PER CHANNEL, so one channel failing never repeats the other.
+    # The very first run only records a baseline (no flood).
+    for ch in CHANNELS:
+        if not channel_ready(ch):
+            continue
+        pending = [j for j in store["jobs"].values() if "gone" not in j and ch not in notified_set(j)]
+        if not pending:
+            continue
         if was_empty:
-            for j in pending:
-                j["notified"] = True
-            report(f"Notifications: first run, {len(pending)} jobs recorded without sending")
+            report(f"Notifications ({ch}): first run, {len(pending)} jobs recorded without sending")
+            ok_sent = True
         else:
             recent = [j for j in pending if (today - dt.date.fromisoformat(j["first_seen"])).days <= 2]
-            if not recent or send_digest(recent, today):
-                for j in pending:  # older leftovers are marked silently so they never flood later
-                    j["notified"] = True
+            ok_sent = not recent or send_digest(ch, recent, today)
+        if ok_sent:
+            for j in pending:  # older leftovers are marked silently so they never flood later
+                j["notified"] = sorted(notified_set(j) | {ch})
+    dcfg = CFG.get("apply_drafts") or {}
+    if dcfg.get("enabled"):
+        prof = json.dumps(dcfg.get("profile") or {})
+        if "EDIT ME" in prof:
+            report("Email drafts: skipped. Replace the EDIT ME lines under apply_drafts.profile in config.yml first")
+        else:
+            horizon = today - dt.timedelta(days=dcfg.get("max_age_days", 14))
+            cands = []
+            for j in fresh:  # only jobs that passed your filters (For you), never the General list
+                rec = store["jobs"].get(j["id"])
+                if not rec or rec.get("drafted") or dt.date.fromisoformat(rec["day"]) < horizon:
+                    continue
+                to = extract_emails(j.get("desc", ""), dcfg.get("max_recipients", 2))
+                if to:
+                    cands.append((j, to))
+            cands.sort(key=lambda c: len(c[0]["skills"]), reverse=True)
+            made = create_drafts(cands[: dcfg.get("max_per_run", 10)], dcfg) if cands else set()
+            for jid in made:
+                store["jobs"][jid]["drafted"] = True
+            report(f"Email drafts: {len(made)} created ({len(cands)} jobs had a contact email in the post)")
     save_store(store)
     if CFG.get("store_others", True):
         recs = update_others(load_others(), rejected, store["jobs"], ok, today)
