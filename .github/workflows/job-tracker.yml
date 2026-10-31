@@ -1,19 +1,16 @@
 name: Job opening tracker
 
 on:
-  workflow_dispatch:       # manual only: triggered by the "Run now" button in docs/
-    inputs:
-      force_apify:
-        description: "Force a fresh Apify fetch (skip any cache/skip logic)"
-        type: boolean
-        default: true
+  schedule:
+    - cron: "30 3 * * *" # 09:00 IST daily
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
   group: job-tracker
-  cancel-in-progress: false   # a button click during a run queues instead of killing it
+  cancel-in-progress: false
 
 jobs:
   track:
@@ -34,7 +31,12 @@ jobs:
         run: python job_tracker/track.py
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
-          FORCE_APIFY: ${{ inputs.force_apify }}
+          FORCE_APIFY: ${{ github.event_name == 'workflow_dispatch' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
 
       - name: Commit report
         run: |
@@ -45,6 +47,5 @@ jobs:
             echo "No changes."
           else
             git commit -m "chore: update job openings"
-            git pull --rebase
             git push
           fi
